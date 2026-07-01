@@ -726,7 +726,13 @@ void Animation::Restore(LODShape* shape, int level) const
     lShape->InvalidateBuffer();
 }
 
-void AnimationSection::DoConstruct() {}
+void AnimationSection::DoConstruct()
+{
+    for (int level = 0; level < MAX_LOD_LEVELS; level++)
+    {
+        _selection[level] = -1;
+    }
+}
 
 AnimationSection::AnimationSection()
 {
