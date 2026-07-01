@@ -155,7 +155,7 @@ bool MemGrow::Commit(size_t size)
                          static_cast<unsigned long long>(ConvertToMB(_commited)),
                          static_cast<unsigned long long>(ConvertToMB(swap.xsu_total)),
                          static_cast<unsigned long long>(ConvertToMB(swap.xsu_avail)));
-#else
+#elif defined(__linux__)
             struct sysinfo si;
             sysinfo(&si);
             ErrorMessage("Cannot increase memory pool to %llu MB.\\n"
@@ -165,6 +165,12 @@ bool MemGrow::Commit(size_t size)
                          static_cast<unsigned long long>(ConvertToMB(_commited)),
                          static_cast<unsigned long long>(ConvertToMB((size_t)si.totalswap * si.mem_unit)),
                          static_cast<unsigned long long>(ConvertToMB((size_t)si.freeswap * si.mem_unit)));
+#else
+            // FreeBSD / other POSIX: no portable swap-stats; emit pool sizes only.
+            ErrorMessage("Cannot increase memory pool to %llu MB.\\n"
+                         "Current memory pool size is %llu MB.",
+                         static_cast<unsigned long long>(ConvertToMB(size)),
+                         static_cast<unsigned long long>(ConvertToMB(_commited)));
 #endif
             return false;
         }
