@@ -274,124 +274,121 @@ int VehicleTypeBank::Load(const char* name)
     if ((Pars >> "CfgVehicles").FindEntry(name))
     {
         const ParamEntry& cfg = Pars >> "CfgVehicles" >> name;
-        if ((cfg >> "scope").GetInt() > 0)
+        // Dispatch by simulation string regardless of scope. scope==0 in ARMA:CWA
+        // means "hidden from editor", not "no simulation" — but GOG missions
+        // reference such classes anyway. Constructing the wrong TypeInfo (plain
+        // EntityAIType) here causes downcasts in NewVehicle (HelicopterAuto etc.)
+        // to read garbage, and simulation crashes on the first Animate.
+        RString simulation = cfg >> "simulation";
+        const ParamEntry* par = &cfg;
+        simulation.Lower();
+        if (!strcmp(simulation, "tank"))
         {
-            // LOG_DEBUG(Physics, "Preload {}",(const char *)name);
-            RString simulation = cfg >> "simulation";
-            const ParamEntry* par = &cfg;
-            simulation.Lower();
-            if (!strcmp(simulation, "tank"))
-            {
-                type = new TankType(par);
-            }
-            else if (!strcmp(simulation, "zsu"))
-            {
-                type = new TankType(par);
-            }
-            else if (!strcmp(simulation, "car"))
-            {
-                type = new CarType(par);
-            }
-            else if (!strcmp(simulation, "motorcycle"))
-            {
-                type = new MotorcycleType(par);
-            }
-            else if (!strcmp(simulation, "ship"))
-            {
-                type = new ShipType(par);
-            }
-            else if (!strcmp(simulation, "soldierold"))
-            {
-                type = new ManType(par);
-            }
-            else if (!strcmp(simulation, "soldier"))
-            {
-                type = new ManType(par);
-            }
-            else if (!strcmp(simulation, "helicopter"))
-            {
-                type = new HelicopterType(par);
-            }
-            else if (!strcmp(simulation, "parachute"))
-            {
-                type = new ParachuteType(par);
-            }
-            else if (!strcmp(simulation, "airplane"))
-            {
-                type = new AirplaneType(par);
-            }
-            else if (!strcmp(simulation, "lasertarget"))
-            {
-                type = new LaserTargetType(par);
-            }
-            if (!strcmp(simulation, "house"))
-            {
-                type = new BuildingType(par);
-            }
-            else if (!strcmp(simulation, "thing"))
-            {
-                type = new ThingType(par);
-            }
-            else if (!strcmp(simulation, "thingeffect"))
-            {
-                type = new ThingType(par);
-            }
-            else if (!strcmp(simulation, "cameratarget"))
-            {
-                Fail("cameratarget obsolete");
-                type = new BuildingType(par);
-            }
-            else if (!strcmp(simulation, "church"))
-            {
-                type = new ChurchType(par);
-            }
-            else if (!strcmp(simulation, "fire"))
-            {
-                type = new BuildingType(par);
-            }
-            else if (!strcmp(simulation, "forest"))
-            {
-                type = new BuildingType(par);
-            }
-            else if (!strcmp(simulation, "seagull"))
-            {
-                type = new EntityAITypePlain(par);
-            }
-            else if (!strcmp(simulation, "camera"))
-            {
-                type = new EntityAITypePlain(par);
-                /*
-                else if( !strcmp(simulation,"flag") ) type=new EntityType(par);
-                else if( !strcmp(simulation,"detector") ) type=new EntityType(par);
-                else if( !strcmp(simulation,"detectorflag") ) type=new EntityType(par);
-                */
-            }
-            else if (!strcmp(simulation, "flagcarrier"))
-            {
-                type = new EntityAITypePlain(par);
-            }
-            else if (!strcmp(simulation, "fountain"))
-            {
-                type = new FountainType(par);
-            }
-            else if (!strcmp(simulation, "invisible"))
-            {
-                type = new InvisibleVehicleType(par);
-            }
-            PoseidonAssert(type);
-            if (type)
-            {
-                PoseidonAssert(!type->IsAbstract());
-                type->Load(cfg);
-                // Log("New public type %s (%s)",name,(const char *)type->GetDisplayName());
-                return Add(type);
-            }
+            type = new TankType(par);
         }
+        else if (!strcmp(simulation, "zsu"))
+        {
+            type = new TankType(par);
+        }
+        else if (!strcmp(simulation, "car"))
+        {
+            type = new CarType(par);
+        }
+        else if (!strcmp(simulation, "motorcycle"))
+        {
+            type = new MotorcycleType(par);
+        }
+        else if (!strcmp(simulation, "ship"))
+        {
+            type = new ShipType(par);
+        }
+        else if (!strcmp(simulation, "soldierold"))
+        {
+            type = new ManType(par);
+        }
+        else if (!strcmp(simulation, "soldier"))
+        {
+            type = new ManType(par);
+        }
+        else if (!strcmp(simulation, "helicopter"))
+        {
+            type = new HelicopterType(par);
+        }
+        else if (!strcmp(simulation, "parachute"))
+        {
+            type = new ParachuteType(par);
+        }
+        else if (!strcmp(simulation, "airplane"))
+        {
+            type = new AirplaneType(par);
+        }
+        else if (!strcmp(simulation, "lasertarget"))
+        {
+            type = new LaserTargetType(par);
+        }
+        else if (!strcmp(simulation, "house"))
+        {
+            type = new BuildingType(par);
+        }
+        else if (!strcmp(simulation, "thing"))
+        {
+            type = new ThingType(par);
+        }
+        else if (!strcmp(simulation, "thingeffect"))
+        {
+            type = new ThingType(par);
+        }
+        else if (!strcmp(simulation, "cameratarget"))
+        {
+            Fail("cameratarget obsolete");
+            type = new BuildingType(par);
+        }
+        else if (!strcmp(simulation, "church"))
+        {
+            type = new ChurchType(par);
+        }
+        else if (!strcmp(simulation, "fire"))
+        {
+            type = new BuildingType(par);
+        }
+        else if (!strcmp(simulation, "forest"))
+        {
+            type = new BuildingType(par);
+        }
+        else if (!strcmp(simulation, "seagull"))
+        {
+            type = new EntityAITypePlain(par);
+        }
+        else if (!strcmp(simulation, "camera"))
+        {
+            type = new EntityAITypePlain(par);
+            /*
+            else if( !strcmp(simulation,"flag") ) type=new EntityType(par);
+            else if( !strcmp(simulation,"detector") ) type=new EntityType(par);
+            else if( !strcmp(simulation,"detectorflag") ) type=new EntityType(par);
+            */
+        }
+        else if (!strcmp(simulation, "flagcarrier"))
+        {
+            type = new EntityAITypePlain(par);
+        }
+        else if (!strcmp(simulation, "fountain"))
+        {
+            type = new FountainType(par);
+        }
+        else if (!strcmp(simulation, "invisible"))
+        {
+            type = new InvisibleVehicleType(par);
+        }
+        if (type)
+        {
+            type->Load(cfg);
+            return Add(type);
+        }
+        // Unknown simulation string — fall back to generic AI type.
         type = new EntityAIType(&cfg);
         type->Load(cfg);
-        PoseidonAssert(type->IsAbstract());
         PoseidonAssert(dynamic_cast<EntityAIType*>(type));
-        // Log("New private type %s (%s)",name,(const char *)type->GetDisplayName());
         return Add(type);
     }
     if ((Pars >> "CfgAmmo").FindEntry(name))

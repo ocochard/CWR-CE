@@ -1498,6 +1498,7 @@ AIUnit* AICenter::CreateSoldier(Transport* transport, int rank, const ParamEntry
     if (!soldier)
     {
         ErrorMessage("Invalid crew %s", (const char*)nameType);
+        return nullptr;
     }
     soldier->SetTargetSide(_side);
 
@@ -1627,24 +1628,26 @@ AIUnit* AICenter::CreateUnit(const ArcadeUnitInfo& info, ArcadeTemplate& t, bool
         if (transport->GetType()->HasDriver() && !disableD)
         {
             AIUnit* driver = CreateSoldier(transport, info.rank, cfgSide, multiplayer);
-
-            RString name;
-            if (info.name.GetLength() > 0)
+            if (driver)
             {
-                name = info.name + RString("d");
-                driver->GetPerson()->SetVarName(name);
-                GWorld->GetGameState()->VarSet(name, GameValueExt(driver->GetPerson()), true);
+                RString name;
+                if (info.name.GetLength() > 0)
+                {
+                    name = info.name + RString("d");
+                    driver->GetPerson()->SetVarName(name);
+                    GWorld->GetGameState()->VarSet(name, GameValueExt(driver->GetPerson()), true);
+                }
+                if (multiplayer)
+                {
+                    GetNetworkManager().CreateVehicle(driver->GetPerson(), VLTVehicle, name, -1);
+                }
+                transport->GetInDriver(driver->GetPerson(), false);
+                driver->AssignAsDriver(transport);
+                driver->OrderGetIn(true);
+                grp->AddUnit(driver);
+                unit = driver;
+                driver->SetAbility(info.skill);
             }
-            if (multiplayer)
-            {
-                GetNetworkManager().CreateVehicle(driver->GetPerson(), VLTVehicle, name, -1);
-            }
-            transport->GetInDriver(driver->GetPerson(), false);
-            driver->AssignAsDriver(transport);
-            driver->OrderGetIn(true);
-            grp->AddUnit(driver);
-            unit = driver;
-            driver->SetAbility(info.skill);
         }
 
         int commanderOffset = 1;
@@ -1662,27 +1665,30 @@ AIUnit* AICenter::CreateUnit(const ArcadeUnitInfo& info, ArcadeTemplate& t, bool
             int commanderRank = info.rank + commanderOffset;
             saturate(commanderRank, 0, NRanks - 1);
             AIUnit* commander = CreateSoldier(transport, (Rank)commanderRank, cfgSide, multiplayer);
-            RString name;
-            if (info.name.GetLength() > 0)
+            if (commander)
             {
-                name = info.name + RString("c");
-                commander->GetPerson()->SetVarName(name);
-                GWorld->GetGameState()->VarSet(name, GameValueExt(commander->GetPerson()), true);
+                RString name;
+                if (info.name.GetLength() > 0)
+                {
+                    name = info.name + RString("c");
+                    commander->GetPerson()->SetVarName(name);
+                    GWorld->GetGameState()->VarSet(name, GameValueExt(commander->GetPerson()), true);
+                }
+                else
+                {
+                    name = "";
+                }
+                if (multiplayer)
+                {
+                    GetNetworkManager().CreateVehicle(commander->GetPerson(), VLTVehicle, name, -1);
+                }
+                transport->GetInCommander(commander->GetPerson(), false);
+                commander->AssignAsCommander(transport);
+                commander->OrderGetIn(true);
+                grp->AddUnit(commander);
+                unit = commander;
+                commander->SetAbility(info.skill);
             }
-            else
-            {
-                name = "";
-            }
-            if (multiplayer)
-            {
-                GetNetworkManager().CreateVehicle(commander->GetPerson(), VLTVehicle, name, -1);
-            }
-            transport->GetInCommander(commander->GetPerson(), false);
-            commander->AssignAsCommander(transport);
-            commander->OrderGetIn(true);
-            grp->AddUnit(commander);
-            unit = commander;
-            commander->SetAbility(info.skill);
         }
 
         if (transport->GetType()->HasGunner() && !disableG)
@@ -1690,31 +1696,34 @@ AIUnit* AICenter::CreateUnit(const ArcadeUnitInfo& info, ArcadeTemplate& t, bool
             int gunnerRank = info.rank + gunnerOffset;
             saturate(gunnerRank, 0, NRanks - 1);
             AIUnit* gunner = CreateSoldier(transport, (Rank)gunnerRank, cfgSide, multiplayer);
-            RString name;
-            if (info.name.GetLength() > 0)
+            if (gunner)
             {
-                name = info.name + RString("g");
-                gunner->GetPerson()->SetVarName(name);
-                GWorld->GetGameState()->VarSet(name, GameValueExt(gunner->GetPerson()), true);
-            }
-            else
-            {
-                name = "";
-            }
-            if (multiplayer)
-            {
-                GetNetworkManager().CreateVehicle(gunner->GetPerson(), VLTVehicle, name, -1);
-            }
-            transport->GetInGunner(gunner->GetPerson(), false);
-            gunner->AssignAsGunner(transport);
-            gunner->OrderGetIn(true);
-            grp->AddUnit(gunner);
+                RString name;
+                if (info.name.GetLength() > 0)
+                {
+                    name = info.name + RString("g");
+                    gunner->GetPerson()->SetVarName(name);
+                    GWorld->GetGameState()->VarSet(name, GameValueExt(gunner->GetPerson()), true);
+                }
+                else
+                {
+                    name = "";
+                }
+                if (multiplayer)
+                {
+                    GetNetworkManager().CreateVehicle(gunner->GetPerson(), VLTVehicle, name, -1);
+                }
+                transport->GetInGunner(gunner->GetPerson(), false);
+                gunner->AssignAsGunner(transport);
+                gunner->OrderGetIn(true);
+                grp->AddUnit(gunner);
 
-            if (!unit)
-            {
-                unit = gunner;
+                if (!unit)
+                {
+                    unit = gunner;
+                }
+                gunner->SetAbility(info.skill);
             }
-            gunner->SetAbility(info.skill);
         }
 
         if (unit)
