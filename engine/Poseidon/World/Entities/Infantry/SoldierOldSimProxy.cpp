@@ -1108,7 +1108,9 @@ MovesType::MovesType(const MovesTypeName& name)
         AnimationRT* anim = moveI;
         if (anim)
         {
-            _name.motionType->GetSkeleton()->Prepare(shape, GetWeights());
+            // gpuSkin=true: infantry is the only object that retains a bone
+            // palette, so only its graphical LODs get GPU-skinning bindings.
+            _name.motionType->GetSkeleton()->Prepare(shape, GetWeights(), true);
             anim->SetLooped((*entry) >> "looped");
         }
     }
