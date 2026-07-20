@@ -126,12 +126,25 @@ World::World(Engine* engine, bool editor)
     Vector3 lightDirection(+1, -0.5, +1);
     LightSun* mainLight = new LightSun();
 
+    if (ENGINE_CONFIG.determinismLog)
+    {
+        // Determinism gate: a wall-clock seed makes every run's RNG stream differ,
+        // so RNG-driven movement drifts (the tick-~900 divergence). Fix the seed
+        // for a reproducible baseline.
+        GRandGen.SetSeed(0x5eed1234u);
+    }
 #ifdef _WIN32
-    SYSTEMTIME time;
-    GetLocalTime(&time);
-    GRandGen.SetSeed(Poseidon::Foundation::GlobalTickCount() + time.wSecond);
+    else
+    {
+        SYSTEMTIME time;
+        GetLocalTime(&time);
+        GRandGen.SetSeed(Poseidon::Foundation::GlobalTickCount() + time.wSecond);
+    }
 #else
-    GRandGen.SetSeed(Poseidon::Foundation::GlobalTickCount() + (unsigned)time(nullptr));
+    else
+    {
+        GRandGen.SetSeed(Poseidon::Foundation::GlobalTickCount() + (unsigned)time(nullptr));
+    }
 #endif
     Glob.clock.SetTimeInYear(8 * OneHour + 130 * OneDay);
     mainLight->Recalculate(this);
