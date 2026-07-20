@@ -1539,6 +1539,9 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
     GEngine->EnableReorderQueues(true);
     // draw non-alpha objects
     scene.DrawObjectsAndShadowsPass1();
+    if (ENGINE_CONFIG.gpuTiming)
+        GEngine->FlushQueues(); // isolate the opaque-object GPU time (diagnostic only)
+    GEngine->MarkGpuStage("objects"); // GPU: opaque object draws (Pass1, view LODs)
     Dev::GFrameProfiler().Mark(Dev::FrameProfiler::PhaseDrawLandObjects);
 
 #if LANDDRAW
@@ -1582,7 +1585,7 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
 #endif
 #endif
     GEngine->FlushQueues();
-    GEngine->MarkGpuStage("world"); // GPU: opaque objects + projected shadows + grass layers
+    GEngine->MarkGpuStage("grass"); // GPU: grass/alpha ground layers (Pass1 objects already marked)
 
     // draw alpha objects and shadows
     scene.DrawObjectsAndShadowsPass2();
