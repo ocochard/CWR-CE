@@ -121,6 +121,13 @@ void World::UpdateInputContext()
 
 void World::Simulate(float deltaT, bool& enableDraw)
 {
+    // Determinism gate: a real (wall-clock) per-frame deltaT makes the sim drift
+    // between runs, so the checksum baseline isn't reproducible.  Force a fixed
+    // 50 Hz step so each tick advances identically regardless of frame timing —
+    // then two runs (or 1- vs N-thread) yield an identical checksum sequence.
+    if (ENGINE_CONFIG.determinismLog)
+        deltaT = 0.02f;
+
     // Frame-phase profiler — feeds the dev panel Perf tab and triPerfStats.
     Dev::FrameProfiler& perf = Dev::GFrameProfiler();
     perf.BeginFrame();
