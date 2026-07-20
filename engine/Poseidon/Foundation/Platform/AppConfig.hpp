@@ -407,6 +407,7 @@ private:
     bool _benchmark = false;
     bool _gpuSkinning = false; // --gpu-skinning: GPU-skin infantry view LODs (experimental)
     bool _gpuTiming = false;   // --gpu-timing: per-pass GPU timestamp breakdown + present wait
+    bool _determinismLog = false; // --determinism-log: per-tick entity-transform checksum
     bool _logFileOps = false;
     bool _netLog = false;
     bool _writeMPReport = false;

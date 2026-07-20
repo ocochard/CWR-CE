@@ -116,6 +116,10 @@ public:
 	// GPU frame-time breakdown (--gpu-timing): per-pass GL timestamp queries +
 	// present wall-time, logged once per frame.  See PERF-gpu-frametime-scope.md.
 	bool gpuTiming = false;
+	// Determinism gate (--determinism-log): per-tick checksum of dynamic-entity
+	// transforms, logged so two runs (or 1- vs N-thread) can be diffed.  The
+	// prerequisite for parallelizing sim-side work.  See PERF-multithread-scope.md.
+	bool determinismLog = false;
 };
 
 // Convenience macro for accessing engine config

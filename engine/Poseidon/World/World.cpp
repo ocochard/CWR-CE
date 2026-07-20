@@ -2,6 +2,7 @@
 
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
+#include <cstring>
 #include <Poseidon/Core/Config/UserConfig.hpp>
 #include <Poseidon/World/World.hpp>
 #include <Poseidon/World/WorldInputContext.hpp>
@@ -123,6 +124,48 @@ void World::Simulate(float deltaT, bool& enableDraw)
     // Frame-phase profiler — feeds the dev panel Perf tab and triPerfStats.
     Dev::FrameProfiler& perf = Dev::GFrameProfiler();
     perf.BeginFrame();
+
+    // Determinism gate (--determinism-log): checksum the dynamic-entity transforms
+    // entering this tick.  Order-independent (XOR of per-entity FNV-1a over ID +
+    // the 12 affine-matrix floats), so container order can't mask a real drift.
+    // Two runs of the deterministic --benchmark (or 1- vs N-thread after the sim
+    // loops are parallelized) must produce an identical checksum sequence, or the
+    // change broke MP-critical determinism.  See PERF-multithread-scope.md.
+    if (ENGINE_CONFIG.determinismLog)
+    {
+        static unsigned long long s_detTick = 0;
+        auto mixf = [](unsigned long long& h, float f)
+        {
+            unsigned int u;
+            std::memcpy(&u, &f, sizeof(u));
+            h ^= u;
+            h *= 1099511628211ULL;
+        };
+        auto hashEntity = [&](const Object* o) -> unsigned long long
+        {
+            if (!o)
+                return 0;
+            unsigned long long h = 1469598103934665603ULL;
+            mixf(h, static_cast<float>(o->ID()));
+            const Matrix4 m = o->WorldTransform();
+            const Vector3P* rows[4] = {&m.DirectionAside(), &m.DirectionUp(), &m.Direction(), &m.Position()};
+            for (const Vector3P* r : rows)
+            {
+                mixf(h, (*r)[0]);
+                mixf(h, (*r)[1]);
+                mixf(h, (*r)[2]);
+            }
+            return h;
+        };
+        unsigned long long sum = 0;
+        int n = 0;
+        for (int i = 0; i < _vehicles.Size(); i++, n++)
+            sum ^= hashEntity(_vehicles.Get(i));
+        for (int i = 0; i < _fastVehicles.Size(); i++, n++)
+            sum ^= hashEntity(_fastVehicles[i]);
+        LOG_INFO(World, "DETERMINISM: tick={} n={} sum={:#018x}", s_detTick++, n, sum);
+    }
+
     float noAccDeltaT = deltaT;
     UpdateInputContext();
     auto& input = InputSubsystem::Instance();
