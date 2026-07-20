@@ -496,6 +496,9 @@ class Engine : public IGraphicsEngine
     // shader (on) and back to the normal mesh shader (off).  Bracket one skinned
     // shape's section draws.  No-op on backends without skinning.
     virtual void SelectSkinnedMesh(bool on) {}
+    // GPU frame-time breakdown (--gpu-timing): record a GL timestamp at this
+    // render-pass boundary (label is a static string).  No-op unless enabled.
+    virtual void MarkGpuStage(const char* label) {}
 
     virtual int HowLongIdle() { return 0; }
     virtual size_t GetDrawItemCount() const { return 0; }

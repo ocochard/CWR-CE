@@ -113,6 +113,9 @@ public:
 	// SSkinnedVertex buffers + upload the BonePalette UBO).  Single source of
 	// truth so the two layers never disagree.  See PERF-gpu-skinning-scope.md.
 	bool enableGpuSkinning = false;
+	// GPU frame-time breakdown (--gpu-timing): per-pass GL timestamp queries +
+	// present wall-time, logged once per frame.  See PERF-gpu-frametime-scope.md.
+	bool gpuTiming = false;
 };
 
 // Convenience macro for accessing engine config

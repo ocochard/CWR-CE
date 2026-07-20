@@ -12,6 +12,9 @@
 #include <Poseidon/Graphics/Shared/ScreenshotWriter.hpp>
 #include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
+#include <chrono>
+#include <cstdio>
+#include <string>
 
 using namespace Poseidon::Dev;
 
@@ -617,6 +620,51 @@ void EngineGL33::CaptureScreenshotIfPending()
     ScreenshotWriter::WriteRGB(path, w, h, rgb.data());
 }
 
+// --- GPU frame-time breakdown (--gpu-timing) -----------------------------------
+// A 3-deep ring of GL_TIMESTAMP queries.  MarkGpuStage records "the GPU reached
+// here"; at frame end we read the OLDEST ring frame (2 frames old -> guaranteed
+// complete, so no glFinish stall) and log the per-stage deltas + present wait.
+// See PERF-gpu-frametime-scope.md.
+namespace
+{
+constexpr int GpuRingFrames = 3;
+constexpr int GpuMaxMarks = 16;
+struct GpuMark
+{
+    const char* label;
+    GLuint q;
+};
+struct GpuRingFrame
+{
+    GpuMark marks[GpuMaxMarks];
+    int n = 0;
+};
+GpuRingFrame s_gpuRing[GpuRingFrames];
+int s_gpuCurr = 0;
+GLuint s_gpuQueries[GpuRingFrames * GpuMaxMarks] = {};
+bool s_gpuQGen = false;
+unsigned s_gpuLogCounter = 0;
+} // namespace
+
+void EngineGL33::MarkGpuStage(const char* label)
+{
+    if (!ENGINE_CONFIG.gpuTiming || !_glContext)
+        return;
+    if (!s_gpuQGen)
+    {
+        glGenQueries(GpuRingFrames * GpuMaxMarks, s_gpuQueries);
+        s_gpuQGen = true;
+    }
+    GpuRingFrame& f = s_gpuRing[s_gpuCurr];
+    if (f.n >= GpuMaxMarks)
+        return;
+    GLuint q = s_gpuQueries[s_gpuCurr * GpuMaxMarks + f.n];
+    glQueryCounter(q, GL_TIMESTAMP);
+    f.marks[f.n].label = label;
+    f.marks[f.n].q = q;
+    f.n++;
+}
+
 void EngineGL33::BackToFront()
 {
     // SSAA: the game frame (3D + HUD) is complete on the scaled target —
@@ -641,8 +689,41 @@ void EngineGL33::BackToFront()
     // undefined, so the capture has to happen pre-swap.
     CaptureScreenshotIfPending();
 
+    MarkGpuStage("swap"); // final GPU mark of this frame (all draws submitted)
+
+    auto pt0 = std::chrono::steady_clock::now();
     if (_glContext && _sdlWindow)
         SDL_GL_SwapWindow(_sdlWindow);
+    auto pt1 = std::chrono::steady_clock::now();
+
+    if (ENGINE_CONFIG.gpuTiming && s_gpuQGen)
+    {
+        const double presentMs = std::chrono::duration<double, std::milli>(pt1 - pt0).count();
+        // Read the oldest ring frame (written GpuRingFrames-1 frames ago -> its
+        // queries are complete, so GL_QUERY_RESULT does not block).
+        const int readSlot = (s_gpuCurr + 1) % GpuRingFrames;
+        GpuRingFrame& rf = s_gpuRing[readSlot];
+        if (rf.n >= 2 && (++s_gpuLogCounter % 60) == 0) // ~once per second
+        {
+            GLuint64 prev = 0;
+            glGetQueryObjectui64v(rf.marks[0].q, GL_QUERY_RESULT, &prev);
+            std::string line;
+            char buf[64];
+            for (int i = 1; i < rf.n; i++)
+            {
+                GLuint64 cur = 0;
+                glGetQueryObjectui64v(rf.marks[i].q, GL_QUERY_RESULT, &cur);
+                snprintf(buf, sizeof(buf), "%s=%.2f ", rf.marks[i].label, (cur - prev) / 1.0e6);
+                line += buf;
+                prev = cur;
+            }
+            LOG_INFO(Graphics, "GPU(ms): {}present={:.2f}", line, presentMs);
+        }
+        // Reuse the slot we just read as the next frame's write slot.
+        s_gpuCurr = readSlot;
+        s_gpuRing[s_gpuCurr].n = 0;
+        MarkGpuStage("frame"); // frame-start baseline for the next frame
+    }
 
     // Frame boundary: apply a pending render-scale change and (re)bind the
     // frame render target for the next frame's draws.

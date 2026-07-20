@@ -1534,6 +1534,7 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
 #endif
 
     GEngine->FlushQueues();
+    GEngine->MarkGpuStage("terrain"); // GPU: opaque terrain + water + horizon (submitted)
     Dev::GFrameProfiler().Mark(Dev::FrameProfiler::PhaseDrawLandGround);
     GEngine->EnableReorderQueues(true);
     // draw non-alpha objects
@@ -1581,9 +1582,12 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
 #endif
 #endif
     GEngine->FlushQueues();
+    GEngine->MarkGpuStage("world"); // GPU: opaque objects + projected shadows + grass layers
 
     // draw alpha objects and shadows
     scene.DrawObjectsAndShadowsPass2();
+    GEngine->FlushQueues();
+    GEngine->MarkGpuStage("pass2"); // GPU: alpha objects + shadow-map pass
 
     GEngine->EnableReorderQueues(false);
     // clear any outstanding arrows (Buldozer ONLY)

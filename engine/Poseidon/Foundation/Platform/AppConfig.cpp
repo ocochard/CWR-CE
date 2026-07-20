@@ -556,6 +556,9 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         showOption(debugGroup->add_flag("--gpu-skinning", _gpuSkinning,
                                         "Experimental: GPU-skin infantry view LODs (bind-pose static VBO + bone UBO)"),
                    CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--gpu-timing", _gpuTiming,
+                                        "Per-pass GPU timestamp breakdown + present wait (real gameplay, not --benchmark)"),
+                   CliHelpVisibility::Dev);
 
         if (!BuildInfo::ReleaseBuild)
         {
@@ -1064,6 +1067,7 @@ void AppConfig::ApplyToLegacyGlobals()
 
     // Debug & Testing
     ENGINE_CONFIG.enableGpuSkinning = _gpuSkinning;
+    ENGINE_CONFIG.gpuTiming = _gpuTiming;
     ::Benchmark = _benchmark;
     ::GLogFileOps = _logFileOps;
 #ifdef NET_LOG_COMMAND_LINE
