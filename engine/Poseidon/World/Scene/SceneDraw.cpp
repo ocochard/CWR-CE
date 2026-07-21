@@ -683,19 +683,19 @@ static int ShadowFactor(Scene* scene)
 int Scene::AdjustShadowComplexity(SortObjectList& objs)
 {
 #if 1
-    int totalComplexity = 0;
+    const int shadowFactorI = ShadowFactor(this);
 
-    int shadowFactorI = ShadowFactor(this);
-
-    for (int i = 0; i < objs.Size(); i++)
+    // Per-object shadow-LOD selection — sibling of AdjustComplexity: independent
+    // per object (writes only oi->shadowLOD) + an integer NFaces() reduction, so
+    // it takes the same parallel-for pattern (--mt-lod).  Returns this object's
+    // shadow face-count contribution.
+    auto computeShadowObj = [&](int i) -> int
     {
         SortObject* oi = objs[i];
         Object* obj = oi->object;
         LODShape* shape = oi->shape;
         if (!shape)
-        {
-            continue;
-        }
+            return 0;
         if (!(shape->Special() & NoShadow) && oi->distance2 < Square(_shadowFogMaxRange) && shadowFactorI >= 12 &&
             obj->CastShadow())
         {
@@ -705,9 +705,7 @@ int Scene::AdjustShadowComplexity(SortObjectList& objs)
             {
                 level = shape->FindNearestWithoutProperty(level, "lodnoshadow");
                 if (level < 0)
-                {
                     level = LOD_INVISIBLE;
-                }
             }
             oi->shadowLOD = level;
         }
@@ -715,13 +713,44 @@ int Scene::AdjustShadowComplexity(SortObjectList& objs)
         {
             oi->shadowLOD = LOD_INVISIBLE;
         }
-        if (oi->shadowLOD != LOD_INVISIBLE)
-        {
-            // check number of faces in given level
-            Shape* level = shape->Level(oi->shadowLOD);
-            totalComplexity += level->NFaces();
-        }
+        if (oi->shadowLOD == LOD_INVISIBLE)
+            return 0;
+        return shape->Level(oi->shadowLOD)->NFaces();
+    };
+
+    const int n = objs.Size();
+    Poseidon::TaskPool* pool = ENGINE_CONFIG.mtLod ? Poseidon::GetGlobalTaskPool() : nullptr;
+    if (pool && n > 1)
+    {
+        std::atomic<int> parTotal{0};
+        pool->ParallelFor(static_cast<uint32_t>(n),
+                          [&](uint32_t start, uint32_t end)
+                          {
+                              int local = 0;
+                              for (uint32_t i = start; i < end; i++)
+                                  local += computeShadowObj(static_cast<int>(i));
+                              parTotal += local;
+                          });
+        // Correctness verify: snapshot parallel result, re-run serial, compare.
+        std::vector<int> pShadow(n);
+        for (int i = 0; i < n; i++)
+            pShadow[i] = objs[i]->shadowLOD;
+        int serTotal = 0;
+        for (int i = 0; i < n; i++)
+            serTotal += computeShadowObj(i);
+        int mism = 0;
+        for (int i = 0; i < n; i++)
+            if (objs[i]->shadowLOD != pShadow[i])
+                mism++;
+        if (mism != 0 || serTotal != parTotal.load())
+            RptF("MT-SHADOWLOD verify FAILED: %d/%d mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
+                 serTotal);
+        return serTotal;
     }
+
+    int totalComplexity = 0;
+    for (int i = 0; i < n; i++)
+        totalComplexity += computeShadowObj(i);
     return totalComplexity;
 #else
 
