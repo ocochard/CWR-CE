@@ -900,7 +900,11 @@ void Landscape::FillCache(const Frame& pos)
     if (ENGINE_CONFIG.noTerrainCache)
         return;
     LOG_DEBUG(World, "Recreate caches {:.1f},{:.1f}", pos.Position().X(), pos.Position().Z());
-    _segCache.Fill(this, pos, Glob.time.toFloat(), ENGINE_CONFIG.horizontZ, Poseidon::GetGlobalTaskPool());
+    // Determinism gate: the parallel segment generation touches shared Landscape
+    // state — force it serial under --determinism-log to test whether it is the
+    // intermittent nondeterminism source (see PERF-multithread-scope.md).
+    Poseidon::TaskPool* segPool = ENGINE_CONFIG.determinismLog ? nullptr : Poseidon::GetGlobalTaskPool();
+    _segCache.Fill(this, pos, Glob.time.toFloat(), ENGINE_CONFIG.horizontZ, segPool);
 }
 
 void Landscape::HeightChange(int x, int z, float y)
