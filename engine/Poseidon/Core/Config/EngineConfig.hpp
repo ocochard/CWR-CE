@@ -125,6 +125,10 @@ public:
 	// verify), since ser6 can't show the FPS win and the determinism gate doesn't
 	// cover render-side LOD.  See PERF-multithread-scope.md.
 	bool mtLod = false;
+	// --mt-verify: also run the serial reference and log mismatches (correctness).
+	// Separate from --mt-lod so a plain --mt-lod run measures true parallel load
+	// (verify does 2x the work by design).
+	bool mtVerify = false;
 };
 
 // Convenience macro for accessing engine config

@@ -645,25 +645,28 @@ int Scene::AdjustComplexity(SortObjectList& objs)
                                   local += computeObj(static_cast<int>(i));
                               parTotal += local;
                           });
-        // Correctness verify (ser6 has no FPS signal and can't show artifacts):
-        // snapshot the parallel result, re-run serial, and log any divergence.
-        // Leaves oi holding the (authoritative) serial result.
-        std::vector<int> pDraw(n), pPass(n);
-        for (int i = 0; i < n; i++)
+        // Correctness verify (--mt-verify): snapshot the parallel result, re-run
+        // serial, log any divergence.  Off for perf runs (it does 2x the work).
+        if (ENGINE_CONFIG.mtVerify)
         {
-            pDraw[i] = objs[i]->drawLOD;
-            pPass[i] = objs[i]->passNum;
+            std::vector<int> pDraw(n), pPass(n);
+            for (int i = 0; i < n; i++)
+            {
+                pDraw[i] = objs[i]->drawLOD;
+                pPass[i] = objs[i]->passNum;
+            }
+            int serTotal = 0;
+            for (int i = 0; i < n; i++)
+                serTotal += computeObj(i);
+            int mism = 0;
+            for (int i = 0; i < n; i++)
+                if (objs[i]->drawLOD != pDraw[i] || objs[i]->passNum != pPass[i])
+                    mism++;
+            if (mism != 0 || serTotal != parTotal.load())
+                RptF("MT-LOD verify FAILED: %d/%d obj mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
+                     serTotal);
         }
-        int serTotal = 0;
-        for (int i = 0; i < n; i++)
-            serTotal += computeObj(i);
-        int mism = 0;
-        for (int i = 0; i < n; i++)
-            if (objs[i]->drawLOD != pDraw[i] || objs[i]->passNum != pPass[i])
-                mism++;
-        if (mism != 0 || serTotal != parTotal.load())
-            RptF("MT-LOD verify FAILED: %d/%d obj mismatches, total par=%d ser=%d", mism, n, parTotal.load(), serTotal);
-        return serTotal;
+        return parTotal.load();
     }
 
     int totalComplexity = 0;
@@ -731,21 +734,24 @@ int Scene::AdjustShadowComplexity(SortObjectList& objs)
                                   local += computeShadowObj(static_cast<int>(i));
                               parTotal += local;
                           });
-        // Correctness verify: snapshot parallel result, re-run serial, compare.
-        std::vector<int> pShadow(n);
-        for (int i = 0; i < n; i++)
-            pShadow[i] = objs[i]->shadowLOD;
-        int serTotal = 0;
-        for (int i = 0; i < n; i++)
-            serTotal += computeShadowObj(i);
-        int mism = 0;
-        for (int i = 0; i < n; i++)
-            if (objs[i]->shadowLOD != pShadow[i])
-                mism++;
-        if (mism != 0 || serTotal != parTotal.load())
-            RptF("MT-SHADOWLOD verify FAILED: %d/%d mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
-                 serTotal);
-        return serTotal;
+        // Correctness verify (--mt-verify): re-run serial + compare.
+        if (ENGINE_CONFIG.mtVerify)
+        {
+            std::vector<int> pShadow(n);
+            for (int i = 0; i < n; i++)
+                pShadow[i] = objs[i]->shadowLOD;
+            int serTotal = 0;
+            for (int i = 0; i < n; i++)
+                serTotal += computeShadowObj(i);
+            int mism = 0;
+            for (int i = 0; i < n; i++)
+                if (objs[i]->shadowLOD != pShadow[i])
+                    mism++;
+            if (mism != 0 || serTotal != parTotal.load())
+                RptF("MT-SHADOWLOD verify FAILED: %d/%d mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
+                     serTotal);
+        }
+        return parTotal.load();
     }
 
     int totalComplexity = 0;
