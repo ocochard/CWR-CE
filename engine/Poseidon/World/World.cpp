@@ -162,11 +162,6 @@ void World::Simulate(float deltaT, bool& enableDraw)
                 mixf(h, (*r)[1]);
                 mixf(h, (*r)[2]);
             }
-            // Pinpoint window: per-entity hash around the observed divergence tick,
-            // so a diverging run can be diffed against a good one to find the first
-            // entity that differs (the culprit).
-            if (s_detTick >= 865 && s_detTick <= 880)
-                LOG_INFO(World, "DETENT t={} id={} h={:#018x}", s_detTick, o->ID(), h);
             return h;
         };
         unsigned long long sum = 0;
