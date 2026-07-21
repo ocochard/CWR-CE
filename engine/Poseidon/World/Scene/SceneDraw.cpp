@@ -1,6 +1,9 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Core/TaskPool.hpp>
+#include <atomic>
+#include <vector>
 #include <Poseidon/Input/InputSubsystem.hpp>
 #include <SDL3/SDL_scancode.h>
 #include <Random/randomGen.hpp>
@@ -556,15 +559,17 @@ INIT_MODULE(GameStateObj, 3)
 
 int Scene::AdjustComplexity(SortObjectList& objs)
 {
-    int totalComplexity = 0;
-    for (int i = 0; i < objs.Size(); i++)
+    // Per-object draw-LOD selection.  Independent per object (writes only this
+    // object's SortObject slot) plus a totalComplexity reduction — a clean
+    // parallel-for shape (--mt-lod).  Returns this object's complexity contribution.
+    auto computeObj = [&](int i) -> int
     {
         SortObject* oi = objs[i];
         Object* obj = oi->object;
         if (!obj)
         {
             Fail("No obj in SortObject info");
-            continue;
+            return 0;
         }
         LODShape* shape = oi->shape;
         if (oi->forceDrawLOD >= 0)
@@ -607,23 +612,63 @@ int Scene::AdjustComplexity(SortObjectList& objs)
             oi->drawLOD = drawLevel;
         }
         // check number of faces in given level
-        if (oi->drawLOD != LOD_INVISIBLE)
-        {
-            oi->passNum = obj->PassNum(oi->drawLOD);
+        if (oi->drawLOD == LOD_INVISIBLE)
+            return 0;
+        oi->passNum = obj->PassNum(oi->drawLOD);
 #if _ENABLE_CHEATS
-            if (CHECK_DIAG(DETransparent))
+        if (CHECK_DIAG(DETransparent))
+        {
+            // all geometries are drawn transparent
+            if (oi->drawLOD == shape->FindGeometryLevel())
             {
-                // all geometries are drawn transparent
-                if (oi->drawLOD == shape->FindGeometryLevel())
-                {
-                    if (oi->passNum < 2)
-                        oi->passNum = 2;
-                }
+                if (oi->passNum < 2)
+                    oi->passNum = 2;
             }
-#endif
-            totalComplexity += obj->GetComplexity(oi->drawLOD, *obj);
         }
+#endif
+        return obj->GetComplexity(oi->drawLOD, *obj);
+    };
+
+    const int n = objs.Size();
+    Poseidon::TaskPool* pool = ENGINE_CONFIG.mtLod ? Poseidon::GetGlobalTaskPool() : nullptr;
+    if (pool && n > 1)
+    {
+        // Parallel: disjoint per-object writes + an order-independent (integer)
+        // atomic reduction, so the result is identical to serial IF the callees
+        // are thread-safe reads.  Verify that empirically below.
+        std::atomic<int> parTotal{0};
+        pool->ParallelFor(static_cast<uint32_t>(n),
+                          [&](uint32_t start, uint32_t end)
+                          {
+                              int local = 0;
+                              for (uint32_t i = start; i < end; i++)
+                                  local += computeObj(static_cast<int>(i));
+                              parTotal += local;
+                          });
+        // Correctness verify (ser6 has no FPS signal and can't show artifacts):
+        // snapshot the parallel result, re-run serial, and log any divergence.
+        // Leaves oi holding the (authoritative) serial result.
+        std::vector<int> pDraw(n), pPass(n);
+        for (int i = 0; i < n; i++)
+        {
+            pDraw[i] = objs[i]->drawLOD;
+            pPass[i] = objs[i]->passNum;
+        }
+        int serTotal = 0;
+        for (int i = 0; i < n; i++)
+            serTotal += computeObj(i);
+        int mism = 0;
+        for (int i = 0; i < n; i++)
+            if (objs[i]->drawLOD != pDraw[i] || objs[i]->passNum != pPass[i])
+                mism++;
+        if (mism != 0 || serTotal != parTotal.load())
+            RptF("MT-LOD verify FAILED: %d/%d obj mismatches, total par=%d ser=%d", mism, n, parTotal.load(), serTotal);
+        return serTotal;
     }
+
+    int totalComplexity = 0;
+    for (int i = 0; i < n; i++)
+        totalComplexity += computeObj(i);
     return totalComplexity;
 }
 

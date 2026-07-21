@@ -120,6 +120,11 @@ public:
 	// transforms, logged so two runs (or 1- vs N-thread) can be diffed.  The
 	// prerequisite for parallelizing sim-side work.  See PERF-multithread-scope.md.
 	bool determinismLog = false;
+	// Multithread the per-object draw-LOD selection (--mt-lod) across the task
+	// pool.  Also runs a serial reference and logs any mismatch (correctness
+	// verify), since ser6 can't show the FPS win and the determinism gate doesn't
+	// cover render-side LOD.  See PERF-multithread-scope.md.
+	bool mtLod = false;
 };
 
 // Convenience macro for accessing engine config

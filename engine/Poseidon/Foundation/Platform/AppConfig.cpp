@@ -562,6 +562,9 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         showOption(debugGroup->add_flag("--determinism-log", _determinismLog,
                                         "Log a per-tick dynamic-entity transform checksum (determinism gate)"),
                    CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--mt-lod", _mtLod,
+                                        "Parallelize per-object draw-LOD selection across the task pool (+ verify)"),
+                   CliHelpVisibility::Dev);
 
         if (!BuildInfo::ReleaseBuild)
         {
@@ -1072,6 +1075,7 @@ void AppConfig::ApplyToLegacyGlobals()
     ENGINE_CONFIG.enableGpuSkinning = _gpuSkinning;
     ENGINE_CONFIG.gpuTiming = _gpuTiming;
     ENGINE_CONFIG.determinismLog = _determinismLog;
+    ENGINE_CONFIG.mtLod = _mtLod;
     ::Benchmark = _benchmark;
     ::GLogFileOps = _logFileOps;
 #ifdef NET_LOG_COMMAND_LINE
