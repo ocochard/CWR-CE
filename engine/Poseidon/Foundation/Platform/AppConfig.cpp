@@ -320,10 +320,10 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         bool showMenuScene = true;
         displayGroup->add_flag("--menu-scene,!--no-menu-scene", showMenuScene, "Show 3D background scene in menu");
 
-        showOption(
+        auto* renderOpt =
             displayGroup->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, auto (default: gl33)")
-                ->check(CLI::IsMember({"dummy", "gl33", "auto"})),
-            CliHelpVisibility::Full);
+                ->check(CLI::IsMember({"dummy", "gl33", "auto"}));
+        showOption(renderOpt, CliHelpVisibility::Full);
 
         showOption(displayGroup->add_flag("--tl,--hw-tl", _enableHWTL,
                                           "Enable hardware transform & lighting (T&L, default on)"),
@@ -760,6 +760,13 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
             if (!_simulateMissionPath.empty())
             {
                 _simulateMode = true;
+                // Headless mission execution: default to the no-GL dummy backend
+                // so --simulate runs without a display or GL context. Otherwise
+                // the default gl33 backend fails to init headless, GEngine stays
+                // null, and Scene::Init null-derefs it (GEngine->TextBank()). An
+                // explicit --render (gl33/auto) still wins for watching a sim.
+                if (renderOpt->count() == 0)
+                    _renderBackend = "dummy";
                 // Make path absolute before any chdir (-C) changes the CWD
                 _testMissionPath = std::filesystem::absolute(_simulateMissionPath).string();
             }
