@@ -617,6 +617,23 @@ int GameApplication::RunAfterArgumentParsing()
 {
     LOG_INFO(Core, "Game starting: version {}", (const char*)GetVersionString());
 
+    // --simulate (standalone) is a PoseidonServer feature: the headless,
+    // duration-terminated sim loop lives in ServerApplication::DedicatedServerLoop,
+    // which reads IsSimulateMode()/GetSimulateDuration(). PoseidonGame has no such
+    // driver, so --simulate here would boot the mission into the client main loop
+    // and idle forever in AppIdle's throttle with no way to exit. Fail fast with
+    // guidance instead of hanging. (--check --simulate stays valid: that is the
+    // bounded mission smoke check, which terminates on its own — only the
+    // non-check form idles, so gate on !CheckInitAndExit().)
+    if (AppConfig::Instance().IsSimulateMode() && !AppConfig::Instance().CheckInitAndExit())
+    {
+        LOG_ERROR(Core,
+                  "--simulate is not supported by PoseidonGame (no headless sim driver - it would "
+                  "idle forever). Use: PoseidonServer --simulate <mission-directory> --duration N "
+                  "(pass the mission folder, e.g. .../Benchmark.Abel, not mission.sqm).");
+        return 1;
+    }
+
     if (!ReadConfiguration())
         return 0;
 
