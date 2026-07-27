@@ -213,7 +213,17 @@ add_subdirectory(apps/tools/Tools)
 add_subdirectory(apps/tools/TcPbo)
 add_subdirectory(apps/tools/TcLister)
 add_subdirectory(apps/tools/Studio)
-add_subdirectory(tests/unit/apps/Studio)
+# The Studio UI test suite is driven by the Dear ImGui Test Engine (the imgui
+# [test-engine] vcpkg feature). System-library builds that bypass vcpkg
+# (e.g. the FreeBSD port, -DVCPKG_MANIFEST_MODE=OFF) don't ship that header, so
+# skip the suite when it isn't found instead of failing the build. Tests are not
+# part of the shipped package.
+find_path(IMGUI_TE_ENGINE_INCLUDE_DIR imgui_te_engine.h)
+if(IMGUI_TE_ENGINE_INCLUDE_DIR)
+    add_subdirectory(tests/unit/apps/Studio)
+else()
+    message(STATUS "Dear ImGui Test Engine not found - skipping PoseidonStudioTests")
+endif()
 add_subdirectory(apps/tetris/Tetris)
 add_subdirectory(tests/unit/apps/Tetris)
 
