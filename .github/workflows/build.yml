@@ -72,6 +72,67 @@ jobs:
           path: ${{ env.CWR_DIST_DIR }}/PoseidonServer
           if-no-files-found: error
 
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+          - arch: x64
+    name: macOS ${{ matrix.arch }} RelWithDebInfo
+    runs-on: macos-26
+    env:
+      CWR_PRESET: macos-${{ matrix.arch }}-clang-rwdi
+      CWR_VCPKG_TRIPLET: ${{ matrix.arch }}-macos-clang
+      CWR_BUILD_DIR: build/macos-${{ matrix.arch }}-clang-rwdi
+      CWR_CTEST_EXCLUDE: 'PoseidonTests - OAL -|PoseidonFoundationTests - potime - Platform consistency|PoseidonFoundationTests - potime - Poseidon - Foundation - getSystemTime timing accuracy|PoseidonFoundationTests - potime - SLEEP_MS macro'
+      CWR_DIST_DIR: dist/${{ matrix.arch }}-macos-rwdi
+      CWR_ARTIFACT_PREFIX: macOS-${{ matrix.arch }}-rwdi
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build metadata
+        id: build_metadata
+        shell: bash
+        run: echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        uses: ./.github/actions/build-cwr
+        with:
+          preset: ${{ env.CWR_PRESET }}
+          vcpkg-triplet: ${{ env.CWR_VCPKG_TRIPLET }}
+          build-dir: ${{ env.CWR_BUILD_DIR }}
+          ctest-exclude: ${{ env.CWR_CTEST_EXCLUDE }}
+
+      - name: Upload Game
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.CWR_ARTIFACT_PREFIX }}-Game-${{ steps.build_metadata.outputs.sha_short }}
+          path: |
+            ${{ env.CWR_DIST_DIR }}/PoseidonGame
+            ${{ env.CWR_DIST_DIR }}/libopenal.dylib
+            ${{ env.CWR_DIST_DIR }}/OpenAL-Soft.LICENSE.txt
+          if-no-files-found: error
+
+      - name: Upload GameDemo
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.CWR_ARTIFACT_PREFIX }}-GameDemo-${{ steps.build_metadata.outputs.sha_short }}
+          path: |
+            ${{ env.CWR_DIST_DIR }}/PoseidonGameDemo
+            ${{ env.CWR_DIST_DIR }}/libopenal.dylib
+            ${{ env.CWR_DIST_DIR }}/OpenAL-Soft.LICENSE.txt
+          if-no-files-found: error
+
+      - name: Upload Server
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.CWR_ARTIFACT_PREFIX }}-Server-${{ steps.build_metadata.outputs.sha_short }}
+          path: ${{ env.CWR_DIST_DIR }}/PoseidonServer
+          if-no-files-found: error
+
   build-windows:
     name: Windows RelWithDebInfo
     runs-on: windows-2022
@@ -154,18 +215,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            engine/Trident -> target
+            . -> target
 
       - name: Check formatting
-        working-directory: engine/Trident
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
       - name: Check clippy
-        working-directory: engine/Trident
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --workspace --all-targets
 
       - name: Build
-        working-directory: engine/Trident
         run: cargo build --locked
 
       - name: Build metadata
@@ -177,19 +235,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.CWR_ARTIFACT_PREFIX }}-Trident-${{ steps.build_metadata.outputs.sha_short }}
-          path: engine/Trident/target/debug/tri
+          path: target/debug/tri
+          if-no-files-found: error
+
+      - name: Upload MasterService
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CWR_ARTIFACT_PREFIX }}-MasterService-${{ steps.build_metadata.outputs.sha_short }}
+          path: target/debug/papa-bear-master-service
           if-no-files-found: error
 
       - name: Test
-        working-directory: engine/Trident
         run: cargo test --locked
 
   trident-test:
-    name: Linux Trident
+    name: Linux Trident (shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     needs:
       - build-linux
       - trident
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -256,6 +324,12 @@ jobs:
           name: ${{ env.CWR_ARTIFACT_PREFIX }}-Trident-${{ steps.build_metadata.outputs.sha_short }}
           path: exe
 
+      - name: Download MasterService
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CWR_ARTIFACT_PREFIX }}-MasterService-${{ steps.build_metadata.outputs.sha_short }}
+          path: exe
+
       - name: Write Trident env
         run: |
           chmod +x exe/*
@@ -267,6 +341,7 @@ jobs:
         env:
           ALSOFT_DRIVERS: 'null'
           HARNESS_CMD_TIMEOUT_SEC: '180'
+          PAPA_BEAR_MASTER_SERVICE: ${{ github.workspace }}/exe/papa-bear-master-service
           TRI_OUTPUT_DIR: ${{ github.workspace }}/trident-output
         run: |
           xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
@@ -274,12 +349,22 @@ jobs:
             exe/tri test \
             --output-dir "$TRI_OUTPUT_DIR" \
             --render "$TRIDENT_RENDER" \
-            --retries 0 \
+            --jobs 2 \
+            --shard ${{ matrix.shard }}/4 \
+            --retries 2 \
             --skip-tag ci-host-blocked \
             --game-arg --audio \
             --game-arg "$TRIDENT_AUDIO" \
             --game-arg --no-strict \
             tests/integration
+
+      - name: Upload Trident output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trident-output-${{ steps.build_metadata.outputs.sha_short }}-shard${{ matrix.shard }}
+          path: trident-output
+          if-no-files-found: ignore
 
   steamrt4:
     name: SteamRT4 Release

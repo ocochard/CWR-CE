@@ -5,6 +5,7 @@
 #include <cstring>
 #include <Poseidon/Core/Config/UserConfig.hpp>
 #include <Poseidon/World/World.hpp>
+#include <Poseidon/World/WorldChatInput.hpp>
 #include <Poseidon/World/WorldInputContext.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
@@ -384,7 +385,8 @@ void World::Simulate(float deltaT, bool& enableDraw)
     }
 
     // multiplayer chat control
-    if (GetNetworkManager().GetGameState() >= NGSCreate)
+    if (GetNetworkManager().GetGameState() >= NGSCreate &&
+        Poseidon::ShouldHandleMultiplayerChatShortcut(_chat != nullptr))
     {
         if (IsPlayerDead())
         {
@@ -433,15 +435,7 @@ void World::Simulate(float deltaT, bool& enableDraw)
             }
         }
 
-        if (input.GetActionToDo(UAChat, true, false))
-        {
-            CreateChat();
-        }
-
-        if (!_voiceChat && input.GetActionToDo(UAVoiceOverNet, true, false))
-        {
-            CreateVoiceChat();
-        }
+        HandleVoiceChatShortcuts();
     }
 
     if (_chat || _voiceChat || _channelChanged >= Glob.uiTime - 3.0f)
@@ -1801,5 +1795,30 @@ void World::Simulate(float deltaT, bool& enableDraw)
     )
     {
         GetSensorList()->SmartUpdateAll();
+    }
+}
+
+void World::HandleVoiceChatShortcuts()
+{
+    if (GetNetworkManager().GetGameState() < NGSCreate ||
+        !Poseidon::ShouldHandleMultiplayerChatShortcut(_chat != nullptr))
+    {
+        return;
+    }
+
+    auto& input = InputSubsystem::Instance();
+    if (input.GetActionToDo(UAChat, true, false))
+    {
+        CreateChat();
+    }
+
+    if (!_voiceChat && input.GetAction(UAVoiceOverNetPushToTalk, false) > 0)
+    {
+        CreateVoiceChat(true);
+    }
+
+    if (!_voiceChat && input.GetActionToDo(UAVoiceOverNet, true, false))
+    {
+        CreateVoiceChat();
     }
 }

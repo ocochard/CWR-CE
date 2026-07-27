@@ -8,6 +8,7 @@ namespace Poseidon::Foundation
 
 #if defined(PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
 // Linux glibc / Bionic ship a recursive-mutex static initializer macro.
+// macOS also defines it; where absent (FreeBSD) the #else path below applies.
 pthread_mutex_t mutexInit = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static inline void initRecursiveMutex(pthread_mutex_t& m)
 {

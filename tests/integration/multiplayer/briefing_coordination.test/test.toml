@@ -1,4 +1,6 @@
 mission = "tests/integration/missions/jip_basic.Demo"
+data_dir = "packages/Demo"
+game_port = 0
 
 tags = ["headful", "ci-host-blocked"]
 

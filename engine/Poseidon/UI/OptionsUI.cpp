@@ -16,6 +16,7 @@
 #include <Poseidon/Core/Progress.hpp>
 
 #include <Poseidon/IO/Serialization/ParamArchive.hpp>
+#include <Poseidon/IO/FileServer.hpp>
 #include <Poseidon/Core/SaveVersion.hpp>
 
 #include <Poseidon/IO/Streams/QBStream.hpp>
@@ -316,6 +317,8 @@ void FindEnvSound(RString name, SoundPars& day, SoundPars& night)
     Poseidon::Foundation::WarningMessage("Environmental sound %s not found", (const char*)name);
 }
 
+static void PreferExistingVoiceLanguageOverride(SoundPars& pars);
+
 void FindSFX(RString name, SoundEntry& emptySound, AutoArray<SoundEntry>& sounds)
 {
     // ignore @ - not used now
@@ -347,6 +350,7 @@ void FindSFX(RString name, SoundEntry& emptySound, AutoArray<SoundEntry>& sounds
             if (sound.name.GetLength() > 0)
             {
                 sound.name = GetMissionDirectory() + sound.name;
+                PreferExistingVoiceLanguageOverride(sound);
             }
         }
         // return sound location
@@ -376,6 +380,7 @@ void FindSFX(RString name, SoundEntry& emptySound, AutoArray<SoundEntry>& sounds
             if (sound.name.GetLength() > 0)
             {
                 sound.name = BaseDirectory + RString("dtaExt\\") + sound.name;
+                PreferExistingVoiceLanguageOverride(sound);
             }
         }
         // return sound location
@@ -842,6 +847,42 @@ void SetMission(RString world, RString mission, RString subdir)
     UpdateCurrentMissionViewDistance();
 }
 
+RString ResolveArcadeMissionSubdir(RString world, RString mission)
+{
+    // An arcade single mission may live unpacked under an active mod's missions/. Return the owning
+    // root's missions subdir so SetMission loads it from there; fall back to the base game's missions/.
+    struct Ctx
+    {
+        RString world;
+        RString mission;
+        RString result;
+    } ctx{world, mission, GetMissionsDir()};
+
+    ModSystem::EnumDirectories(
+        [](RStringB dir, void* context) -> bool
+        {
+            if (dir.GetLength() == 0)
+            {
+                return false;
+            }
+            auto* c = static_cast<Ctx*>(context);
+            const RString subdir = RString((const char*)dir) + RString("/") + GetMissionsDir();
+            const RString probe = subdir + c->mission + RString(".") + c->world;
+            _finddata_t info;
+            const intptr_t h = _findfirst(probe, &info);
+            if (h != -1)
+            {
+                _findclose(h);
+                c->result = subdir;
+                return true;
+            }
+            return false;
+        },
+        &ctx);
+
+    return ctx.result;
+}
+
 void SetMission(RString world, RString mission)
 {
     SetMission(world, mission, GetMissionsDir());
@@ -890,25 +931,70 @@ static bool FindMissionPboCallback(RStringB dir, void* ctx)
     return false;
 }
 
+struct FindCutsceneRootContext
+{
+    const char* rel; // "Anims\\<name>.<world>\\mission.sqm"
+    RString result;  // "<mod>\\Anims\\" subdir when a mod carries the cutscene
+};
+static bool FindCutsceneRootCallback(RStringB dir, void* ctx)
+{
+    auto* c = static_cast<FindCutsceneRootContext*>(ctx);
+    if (dir.GetLength() == 0)
+        return false; // base dir -> the anims/ bank is the fallback
+    char probe[1024];
+    snprintf(probe, sizeof(probe), "%s\\%s", (const char*)dir, c->rel);
+    if (!QIFStreamB::FileExist(probe))
+        return false;
+    char sub[1024];
+    snprintf(sub, sizeof(sub), "%s\\Anims\\", (const char*)dir);
+    c->result = sub;
+    return true;
+}
+
+RString ResolveCutsceneAnimsSubdir(RString world, RString name)
+{
+    // A "..\addons\..." cutscene is a packed-bank path resolved through the base anims/ mount; only a
+    // bare cutscene name lives in a mod's Anims/ folder, hosted like any other mission type.
+    if (strpbrk(name, "\\/"))
+        return GetAnimsDir();
+    char rel[512];
+    snprintf(rel, sizeof(rel), "Anims\\%s.%s\\mission.sqm", (const char*)name, (const char*)world);
+    FindCutsceneRootContext ctx;
+    ctx.rel = rel;
+    if (::EnumModDirectories(FindCutsceneRootCallback, &ctx))
+        return ctx.result;
+    return GetAnimsDir();
+}
+
 RString CreateSingleMissionBank(RString filename)
 {
     // suppose filename is without extension (.pbo)
 
-    // remove bank
-    // QFBank::SetPrefix() runs the stored value through platformPath(), so on
-    // POSIX bank.GetPrefix() uses '/'. Match against a normalized copy while
-    // keeping the returned prefix in backslash form (the caller parses it
-    // with strrchr(buf, '\\')).
+    // Remove the previously created __cur_sp bank(s). Match with CmpStartStr —
+    // the same separator- and case-insensitive prefix test AutoBank uses to
+    // resolve reads. A plain strnicmp here is separator-sensitive, and
+    // SetPrefix() stores the prefix with platform-native separators
+    // (backslash -> slash on POSIX): on Linux the literal backslash prefix never
+    // matched, so old banks leaked and every template resolved to the first
+    // stale __cur_sp bank.
     const char* prefix = "missions\\__cur_sp.";
-    char matchBuf[64];
-    snprintf(matchBuf, sizeof(matchBuf), "%s", prefix);
-    platformPath(matchBuf);
-    const int matchLen = strlen(matchBuf);
     for (int i = 0; i < GFileBanks.Size();)
     {
         QFBank& bank = GFileBanks[i];
-        if (strnicmp(bank.GetPrefix(), matchBuf, matchLen) == 0)
+        if (CmpStartStr(bank.GetPrefix(), prefix) == 0)
         {
+            if (GFileServer)
+            {
+                GFileServer->FlushBank(&bank);
+            }
+            if (GEngine && GEngine->TextBank())
+            {
+                GEngine->TextBank()->FlushBank(&bank);
+            }
+            if (GSoundsys)
+            {
+                GSoundsys->FlushBank(&bank);
+            }
             GFileBanks.Delete(i);
         }
         else
@@ -2122,9 +2208,10 @@ void StartRandomCutscene(RString world)
 
     RString name = cls[i];
 
-    SetMission(world, name, GetAnimsDir());
-    //	SetCampaign("");
+    // A mod that ships Anims/<name>.<world> hosts the cutscene from its own root; else the base
+    // anims/ bank. Clear the base dir first so SetMission's own reads resolve from the same place.
     SetBaseDirectory("");
+    SetMission(world, name, ResolveCutsceneAnimsSubdir(world, name));
 
     ParseIntro();
 

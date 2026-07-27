@@ -1,6 +1,8 @@
 #include <Poseidon/UI/Map/UIMap.hpp>
 using namespace Poseidon;
 #include <Poseidon/Core/Config/EngineConfig.hpp>
+#include <Poseidon/UI/Locale/Stringtable/CodepageTranscode.hpp>
+#include <Poseidon/UI/Locale/Stringtable/Stringtable.hpp>
 #include <Poseidon/Core/Config/UserConfig.hpp>
 #include <Poseidon/Core/resincl.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
@@ -9,6 +11,7 @@ using namespace Poseidon;
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/IO/Streams/QBStream.hpp>
 #include <Random/randomGen.hpp>
+#include <Poseidon/Foundation/Strings/LocaleCollate.hpp>
 #include <Poseidon/Foundation/Strings/StrFormat.hpp>
 #include <Poseidon/Game/Scripting/Scripts.hpp>
 #include <Poseidon/Foundation/Common/Win.h>
@@ -152,12 +155,12 @@ void __cdecl ReportRemountFailure()
 
 bool __cdecl CreateClientDeferred(RString ip, int port, RString password);
 
-// Non-blocking connect to a known host, driven once per frame from AppIdle. A host
-// must be enumerated before JoinSession can build the client, but the enumeration is
-// pumped by the menu loop — so WaitForSession's blocking while(true) starves it and
-// hangs. Instead this kicks off enumeration once, then on each later frame (the loop
-// having pumped the enum in between) polls for the host and joins when it appears.
-// Returns true when finished (connected, failed, or timed out); false while waiting.
+// Non-blocking connect to a known host, driven once per frame from AppIdle. The
+// enumeration is pumped by the menu loop, so WaitForSession's blocking while(true)
+// starves it and hangs. Instead this kicks off enumeration once, polls while the
+// menu loop pumps it, then joins the explicit address even if the host never
+// appeared in the session list.
+// Returns true when finished (connected or failed); false while waiting.
 bool __cdecl CreateClientDeferred(RString ip, int port, RString password)
 {
     static bool s_enumerating = false;
@@ -185,13 +188,8 @@ bool __cdecl CreateClientDeferred(RString ip, int port, RString password)
     Display* options = dynamic_cast<Display*>(GWorld->Options());
     if (!found)
     {
-        LOG_INFO(Network, "[CreateClientDeferred] no session for {}:{} after {} ticks", ip.Data(), port, s_ticks);
-        if (options)
-        {
-            options->CreateMsgBox(MB_BUTTON_OK, LocalizeString(IDS_MSG_MP_CONNECT_ERROR));
-        }
-        GetNetworkManager().Done();
-        return true;
+        LOG_INFO(Network, "[CreateClientDeferred] no enumerated session for {}:{} after {} ticks; trying direct join",
+                 ip.Data(), port, s_ticks);
     }
 
     RString guid = GetNetworkManager().IPToGUID(ip, port);
@@ -589,7 +587,7 @@ int CmpMods(const ModRow* a, const ModRow* b, CmpModsContext ctx)
     switch (ctx.column)
     {
         case MSCName:
-            value = stricmp(a->name, b->name);
+            value = Poseidon::Foundation::CollateUtf8(a->name, b->name);
             break;
         case MSCVersion:
             value = stricmp(a->version, b->version);
@@ -788,7 +786,7 @@ DisplayMultiplayer::DisplayMultiplayer(ControlsContainer* parent) : Display(pare
     C3DActiveText* dplayButton = dynamic_cast<C3DActiveText*>(GetCtrl(IDC_MULTI_DPLAY));
     if (dplayButton)
     {
-        dplayButton->SetText(LocalizeString(IDS_DISP_MULTI_SOCKETS));
+        dplayButton->SetText(FormatNetworkMasterServerAttribution(GetNetworkMasterServer()));
     }
 
     SetSource(source);
@@ -829,7 +827,9 @@ void DisplayMultiplayer::OnSimulate(EntityAI* vehicle)
 {
     if (_source == BSInternet)
     {
+        GetNetworkManager().OnSimulate();
         UpdateServerList();
+        UpdateInternetSessionPings();
     }
     else
     {
@@ -1070,7 +1070,9 @@ bool DisplayMultiplayer::BeginModdedJoin(const SessionInfo& info)
     }
 
     std::string title = (const char*)Format(LocalizeString("STR_DISP_MODS_JOIN_TITLE"), (const char*)info.name);
-    CreateChild(new DisplayJoinRequirements(this, RString(title.c_str()), RString(diff.c_str()), _password));
+    const RString okText = LocalizeString(action == Poseidon::MpJoinAction::Download ? "STR_DISP_MODS_DOWNLOAD_JOIN"
+                                                                                     : "STR_DISP_MODS_SETUP_JOIN");
+    CreateChild(new DisplayJoinRequirements(this, RString(title.c_str()), RString(diff.c_str()), _password, okText));
     return true;
 }
 
@@ -1604,6 +1606,8 @@ void DisplayMultiplayer::UpdateServerList()
         filter.includeFullServers = _filter.fullServers;
 
         SetProgress(0);
+        _internetPingProbe = false;
+        _internetPingProbeFrames = 0;
         UpdateMasterServerBrowser(_serverList, filter); // spawns the fetch worker
         _refreshing = true;
         return;
@@ -1629,6 +1633,7 @@ void DisplayMultiplayer::UpdateServerList()
     }
 
     _sessions->_sessions.Resize(0);
+    AutoArray<RemoteHostAddress> pingHosts;
     const int count = GetMasterServerBrowserCount(_serverList);
     for (int i = 0; i < count; i++)
     {
@@ -1664,6 +1669,14 @@ void DisplayMultiplayer::UpdateServerList()
         dst.timeleft = info.timeLeft;
         dst.mod = info.mod;
         dst.equalModRequired = info.equalModRequired;
+
+        if (info.address != nullptr && info.address[0] != 0 && info.hostPort > 0)
+        {
+            RemoteHostAddress& host = pingHosts[pingHosts.Add()];
+            host.name = info.hostName;
+            host.ip = info.address;
+            host.port = info.hostPort;
+        }
     }
 
     sel = 0;
@@ -1679,7 +1692,53 @@ void DisplayMultiplayer::UpdateServerList()
     _sessions->Sort(_sort, _ascending);
 
     _refreshing = false;
+    _internetPingProbe = pingHosts.Size() > 0 && GetNetworkManager().ProbeRemoteHosts(pingHosts, GetNetworkPort());
+    _internetPingProbeFrames = _internetPingProbe ? 0 : 0;
     SetProgress(100);
+}
+
+void DisplayMultiplayer::UpdateInternetSessionPings()
+{
+    if (!_internetPingProbe || !_sessions)
+    {
+        return;
+    }
+
+    AutoArray<SessionInfo> measured;
+    GetNetworkManager().GetSessions(measured);
+    bool changed = false;
+    for (int i = 0; i < measured.Size(); ++i)
+    {
+        const SessionInfo& src = measured[i];
+        if (src.ping <= 0)
+        {
+            continue;
+        }
+        for (int j = 0; j < _sessions->_sessions.Size(); ++j)
+        {
+            SessionInfo& dst = _sessions->_sessions[j];
+            if (stricmp(dst.guid, src.guid) == 0)
+            {
+                if (dst.ping != src.ping)
+                {
+                    dst.ping = src.ping;
+                    changed = true;
+                }
+                break;
+            }
+        }
+    }
+
+    if (changed)
+    {
+        _sessions->Sort(_sort, _ascending);
+    }
+
+    _internetPingProbeFrames++;
+    if (_internetPingProbeFrames > 180)
+    {
+        _internetPingProbe = false;
+    }
 }
 
 void DisplayMultiplayer::SeedTestSessions(int count)
@@ -1721,6 +1780,20 @@ void DisplayMultiplayer::SeedTestSessions(int count)
     _sessions->Sort(_sort, _ascending);
 }
 
+int DisplayMultiplayer::GetVisibleSessionPingForTest(int row) const
+{
+    if (!_sessions || row < 0 || row >= _sessions->GetSize())
+    {
+        return -1;
+    }
+    const int actualRow = _sessions->VisibleRow(row);
+    if (actualRow < 0 || actualRow >= _sessions->_sessions.Size())
+    {
+        return -1;
+    }
+    return _sessions->_sessions[actualRow].ping;
+}
+
 int DisplayMultiplayer::GetPort()
 {
     if (_ipAddress.GetLength() == 0)
@@ -1757,7 +1830,7 @@ void DisplayMultiplayer::RefreshLanguage()
 {
     if (auto* dplayButton = dynamic_cast<C3DActiveText*>(GetCtrl(IDC_MULTI_DPLAY)))
     {
-        dplayButton->SetText(LocalizeString(IDS_DISP_MULTI_SOCKETS));
+        dplayButton->SetText(FormatNetworkMasterServerAttribution(GetNetworkMasterServer()));
     }
 
     SetSource(_source);
@@ -1866,6 +1939,15 @@ Control* DisplayJoinRequirements::OnCreateCtrl(int type, int idc, const ParamEnt
     {
         if (CStatic* s = dynamic_cast<CStatic*>(c))
             s->SetText(_title);
+    }
+    else if (idc == IDC_OK && _okText.GetLength() > 0)
+    {
+        if (CActiveText* a = dynamic_cast<CActiveText*>(c))
+            a->SetText(_okText);
+        else if (C3DActiveText* a = dynamic_cast<C3DActiveText*>(c))
+            a->SetText(_okText);
+        else if (CButton* b = dynamic_cast<CButton*>(c))
+            b->SetText(_okText);
     }
     return c;
 }
@@ -2036,7 +2118,8 @@ Control* DisplayServer::OnCreateCtrl(int type, int idc, const ParamEntry& cls)
                     continue;
                 }
 
-                int index = lbox->AddString(Pars >> "CfgWorlds" >> name >> "description");
+                int index = lbox->AddString(
+                    Poseidon::DecodeLegacyTextToRString(Pars >> "CfgWorlds" >> name >> "description", GLanguage));
                 lbox->SetData(index, name);
                 if (stricmp(name, Glob.header.worldname) == 0)
                 {
@@ -2372,6 +2455,114 @@ void DisplayServer::SaveParams()
     }
 }
 
+namespace
+{
+void AddMPMissionBankRow(C3DListBox* lbox, const char* filename)
+{
+    char name[256];
+    snprintf(name, sizeof(name), "%s", filename);
+    char* ext = strrchr(name, '.'); // extension .pbo
+    if (!ext)
+    {
+        return;
+    }
+    *ext = 0;
+    ext = strrchr(name, '.'); // world name
+    if (!ext)
+    {
+        return;
+    }
+    *ext = 0;
+
+    const int index = lbox->AddString(name);
+    lbox->SetData(index, name);
+    lbox->SetValue(index, 0); // public/mod bank
+}
+
+bool MPMissionBankMatchesIsland(const char* filename, RString island)
+{
+    char name[256];
+    snprintf(name, sizeof(name), "%s", filename);
+    char* ext = strrchr(name, '.'); // extension .pbo
+    if (!ext || stricmp(ext + 1, "pbo") != 0)
+    {
+        return false;
+    }
+    *ext = 0;
+    ext = strrchr(name, '.'); // world name
+    if (!ext)
+    {
+        return false;
+    }
+    return stricmp(ext + 1, island) == 0;
+}
+
+struct AddModMPMissionsContext
+{
+    C3DListBox* lbox;
+    RString island;
+};
+
+void ScanMPMissionBanksInDir(AddModMPMissionsContext* ctx, const char* dir)
+{
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s%c*.pbo", dir, PATH_SEP);
+
+    _finddata_t info;
+    intptr_t h = _findfirst(pattern, &info);
+    if (h != -1)
+    {
+        do
+        {
+            if ((info.attrib & _A_SUBDIR) == 0 && MPMissionBankMatchesIsland(info.name, ctx->island))
+            {
+                AddMPMissionBankRow(ctx->lbox, info.name);
+            }
+        } while (0 == _findnext(h, &info));
+        _findclose(h);
+    }
+}
+
+void AddModMPMissionFilesInDir(AddModMPMissionsContext* ctx, const char* modDir, const char* missionsDir)
+{
+    char base[1024];
+    snprintf(base, sizeof(base), "%s%c%s", modDir, PATH_SEP, missionsDir);
+    ScanMPMissionBanksInDir(ctx, base);
+
+    // Mods usually group missions one level down (MPMissions/<Category>/<mission>.pbo); scan those subfolders too.
+    char subPattern[1024];
+    snprintf(subPattern, sizeof(subPattern), "%s%c*", base, PATH_SEP);
+    _finddata_t info;
+    intptr_t h = _findfirst(subPattern, &info);
+    if (h != -1)
+    {
+        do
+        {
+            if ((info.attrib & _A_SUBDIR) != 0 && info.name[0] != '.')
+            {
+                char subDir[1024];
+                snprintf(subDir, sizeof(subDir), "%s%c%s", base, PATH_SEP, info.name);
+                ScanMPMissionBanksInDir(ctx, subDir);
+            }
+        } while (0 == _findnext(h, &info));
+        _findclose(h);
+    }
+}
+
+bool AddModMPMissionFiles(RStringB dir, void* context)
+{
+    if (dir.GetLength() == 0)
+    {
+        return false;
+    }
+
+    auto* ctx = static_cast<AddModMPMissionsContext*>(context);
+    AddModMPMissionFilesInDir(ctx, (const char*)dir, GameDirs::MPMissions);
+    AddModMPMissionFilesInDir(ctx, (const char*)dir, "mpmissions");
+    return false;
+}
+} // namespace
+
 void DisplayServer::UpdateMissions(RString filename)
 {
     C3DListBox* lbox = dynamic_cast<C3DListBox*>(GetCtrl(IDC_SERVER_ISLAND));
@@ -2430,19 +2621,16 @@ void DisplayServer::UpdateMissions(RString filename)
         {
             if ((info.attrib & _A_SUBDIR) == 0)
             {
-                char name[256];
-                snprintf(name, sizeof(name), "%s", (const char*)info.name);
-                char* ext = strrchr(name, '.'); // extension .pbo
-                *ext = 0;
-                ext = strrchr(name, '.'); // world name
-                *ext = 0;
-                int index = lbox->AddString(name);
-                lbox->SetData(index, name);
-                lbox->SetValue(index, 0); // public bank
+                AddMPMissionBankRow(lbox, info.name);
             }
         } while (0 == _findnext(h, &info));
         _findclose(h);
     }
+
+    AddModMPMissionsContext modMissions;
+    modMissions.lbox = lbox;
+    modMissions.island = island;
+    ModSystem::EnumDirectories(AddModMPMissionFiles, &modMissions);
 
     ::sprintf(buffer, "%s%c*.%s", GameDirs::MPMissions, PATH_SEP, (const char*)island);
 
@@ -2564,7 +2752,8 @@ Control* DisplayRemoteMissions::OnCreateCtrl(int type, int idc, const ParamEntry
                     continue;
                 }
 
-                int index = lbox->AddString(Pars >> "CfgWorlds" >> name >> "description");
+                int index = lbox->AddString(
+                    Poseidon::DecodeLegacyTextToRString(Pars >> "CfgWorlds" >> name >> "description", GLanguage));
                 lbox->SetData(index, name);
                 if (stricmp(name, Glob.header.worldname) == 0)
                 {
