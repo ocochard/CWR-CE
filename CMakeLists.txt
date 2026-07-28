@@ -213,7 +213,15 @@ add_subdirectory(apps/tools/Tools)
 add_subdirectory(apps/tools/TcPbo)
 add_subdirectory(apps/tools/TcLister)
 add_subdirectory(apps/tools/Studio)
-add_subdirectory(tests/unit/apps/Studio)
+# The Studio UI test needs the Dear ImGui Test Engine (imgui [test-engine] vcpkg
+# feature), absent in a system-library (VCPKG_MANIFEST_MODE=OFF) FreeBSD build. Skip
+# it when the header isn't found. Tests aren't part of the shipped package.
+find_path(IMGUI_TE_ENGINE_INCLUDE_DIR imgui_te_engine.h)
+if(IMGUI_TE_ENGINE_INCLUDE_DIR)
+    add_subdirectory(tests/unit/apps/Studio)
+else()
+    message(STATUS "Dear ImGui Test Engine not found - skipping PoseidonStudioTests")
+endif()
 add_subdirectory(apps/tetris/Tetris)
 add_subdirectory(tests/unit/apps/Tetris)
 
