@@ -37,8 +37,9 @@ class VertexBufferGL33 : public VertexBuffer
     GLuint _vao = 0;
     GLuint _vbo = 0;
     GLuint _ibo = 0;
-    bool _dynamic = false;
-    bool _skinned = false; // VBO uses SSkinnedVertex layout (GPU skinning)
+    bool _dynamic = false;          // dynamic storage: GL_DYNAMIC_DRAW + orphaning map
+    bool _reuploadPerFrame = false; // re-copy the source vertices every draw (VBDynamic)
+    bool _skinned = false;          // VBO uses SSkinnedVertex layout (GPU skinning)
     int _vertexCount = 0;
     int _indexCount = 0;
     AutoArray<VBSectionInfo> _sections;
@@ -85,7 +86,7 @@ void VertexBufferGL33::SetupVertexAttribs()
     // Caller must have _vao bound and _vbo bound to GL_ARRAY_BUFFER.
     // Layout shared with the engine's `_vaoMesh` setup — see
     // `GLVertexAttribLayouts.hpp` for the single source of truth.  Skinned
-    // buffers add the two integer bone attributes (locations 3/4); the
+    // buffers add the two integer bone attributes (locations 4/5); the
     // SSkinnedVertex layout is per-shape only and never aliases `_vaoMesh`.
     if (_skinned)
     {
@@ -127,26 +128,32 @@ void VertexBufferGL33::CopyVertices(const Shape& src)
     const bool bindPose = _skinned && src.OriginalPosValid();
     const Vector3* pos = bindPose ? &src.OrigPos(0) : &src.Pos(0);
     const Vector3* norm = bindPose ? &src.OrigNorm(0) : &src.Norm(0);
+    // ApplyLandClip clears the ClipLandKeep bit as it conforms, so read the
+    // saved original flags when a shape has been animated.
+    const bool useOrig = src.OriginalPosValid();
     const int n = src.NVertex();
     for (int i = 0; i < n; i++)
     {
-        // pos/norm/t0 occupy identical offsets in SVertex and SSkinnedVertex, so
-        // the SVertex view writes the shared fields for both strides.
+        // pos/norm/t0/landClip occupy identical offsets in SVertex and
+        // SSkinnedVertex, so the SVertex view writes the shared fields for both
+        // strides.
         SVertex* v = reinterpret_cast<SVertex*>(base + i * stride);
         v->pos = Vector3P(pos[i].X(), pos[i].Y(), pos[i].Z());
         // Normals are negated (matches D3D11 convention)
         v->norm = Vector3P(-norm[i].X(), -norm[i].Y(), -norm[i].Z());
         v->t0 = uv[i];
+        ClipFlags clip = useOrig ? src.OrigClip(i) : src.Clip(i);
+        v->landClip = (clip & ClipLandKeep) ? 1 : ((clip & ClipLandOn) ? 2 : 0);
         if (_skinned)
         {
             // Static bone attributes — uploaded once (GL_STATIC_DRAW), never
             // rewritten per frame; the palette moves instead (BonePalette UBO).
-            SSkinnedVertex* s = reinterpret_cast<SSkinnedVertex*>(base + i * stride);
+            SSkinnedVertex* sv = reinterpret_cast<SSkinnedVertex*>(base + i * stride);
             const SkinVertexBinding& b = src.Skin(i);
             for (int j = 0; j < 4; j++)
             {
-                s->boneIdx[j] = b.idx[j];
-                s->boneWeight[j] = b.weight[j];
+                sv->boneIdx[j] = b.idx[j];
+                sv->boneWeight[j] = b.weight[j];
             }
         }
     }
@@ -169,7 +176,8 @@ bool VertexBufferGL33::Init(const Shape& src, VBType type)
     // Skinned buffers hold the static bind pose (the palette animates on the GPU),
     // so they never need a per-frame re-upload -> force GL_STATIC_DRAW and skip
     // Update().  This removes the dynamic vertex-streaming cost for the view mesh.
-    _dynamic = (type == VBDynamic || type == VBSmallDiscardable) && !_skinned;
+    _dynamic = (type != VBStatic) && !_skinned;
+    _reuploadPerFrame = (type == VBDynamic) && !_skinned;
     _vertexCount = src.NVertex();
 
     // Core profile requires a non-zero VAO bound before any
@@ -259,7 +267,7 @@ bool VertexBufferGL33::Init(const Shape& src, VBType type)
     return true;
 }
 
-void VertexBufferGL33::Update(const Shape& src, bool dynamic)
+void VertexBufferGL33::Update(const Shape& src, bool forceUpdate)
 {
     // Skinned buffers are the static bind pose — never re-upload.  This is the
     // per-frame dynamic-streaming (~libgallium) cost the GPU-skinning change
@@ -269,7 +277,7 @@ void VertexBufferGL33::Update(const Shape& src, bool dynamic)
         bufferDirty = false;
         return;
     }
-    if (_dynamic || dynamic || bufferDirty)
+    if (_reuploadPerFrame || forceUpdate || bufferDirty)
     {
         CopyVertices(src);
         bufferDirty = false;
@@ -368,34 +376,22 @@ void EngineGL33::EmitDraw(const Poseidon::render::frame::Draw& d)
 
     GL33Bind::Vao(d.mesh.vao);
 
-    // TEXTURE0 + TEXTURE1 binds.  Both handles were captured from the
-    // `SetTexture` / `SetMultiTexturing` callsites, so this rebinds
-    // the same multi-tex configuration regardless of what's currently
-    // bound.  Handle 0 is skipped (sentinel).  The TEXTURE1 bind ends
-    // with the active unit back on TEXTURE0 — every subsequent call
-    // assumes that.
     if (d.textures[1].id != 0)
-        GL33Bind::Tex2D(1, d.textures[1].id);
+        GL33Bind::Tex2DForSampling(1, d.textures[1].id);
     if (d.textures[0].id != 0)
-        GL33Bind::Tex2D(0, d.textures[0].id);
-    else
-        GL33Bind::ActiveUnit(0);
+        GL33Bind::Tex2DForSampling(0, d.textures[0].id);
 
-    // Per-draw world-matrix upload from the typed `Draw.world` —
-    // never inherited from whatever was last in `_currentDrawItem`.
-    // `UploadVSWorldMatrix` flushes VS constants internally;
-    // FlushPSConstants is explicit because PS-side state (material,
-    // sampler, texture-color routing) is bound by the descriptor /
-    // `ApplyPipeline` path.
-    UploadVSWorldMatrix(reinterpret_cast<const float*>(&d.world));
+    // Only upload the world matrix if this is a non-instanced draw
+    // (instanced objects read their matrices from a UBO)
+    if (_instCount <= 1) 
+    {
+        UploadVSWorldMatrix(reinterpret_cast<const float*>(&d.world));
+    }
     FlushPSConstants();
 
     const std::intptr_t offsetBytes = Poseidon::render::frame::ComputeIndexByteOffset(d.indexBegin, sizeof(VertexIndex));
     if (_instCount > 1)
     {
-        // Instanced run: the WorldInstances UBO already holds the matrices;
-        // the per-draw upload above wrote slot 0 (= matrices[0]) again,
-        // which is harmless. gl_InstanceID selects the rest.
         glDrawElementsInstanced(GL_TRIANGLES, d.indexCount, GL_UNSIGNED_SHORT, reinterpret_cast<void*>(offsetBytes),
                                 _instCount);
     }
