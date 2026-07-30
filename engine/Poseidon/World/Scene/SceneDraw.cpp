@@ -1,6 +1,9 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Core/TaskPool.hpp>
+#include <atomic>
+#include <vector>
 #include <Poseidon/Input/InputSubsystem.hpp>
 #include <SDL3/SDL_scancode.h>
 #include <Random/randomGen.hpp>
@@ -556,15 +559,17 @@ INIT_MODULE(GameStateObj, 3)
 
 int Scene::AdjustComplexity(SortObjectList& objs)
 {
-    int totalComplexity = 0;
-    for (int i = 0; i < objs.Size(); i++)
+    // Per-object draw-LOD selection.  Independent per object (writes only this
+    // object's SortObject slot) plus a totalComplexity reduction — a clean
+    // parallel-for shape (--mt-lod).  Returns this object's complexity contribution.
+    auto computeObj = [&](int i) -> int
     {
         SortObject* oi = objs[i];
         Object* obj = oi->object;
         if (!obj)
         {
             Fail("No obj in SortObject info");
-            continue;
+            return 0;
         }
         LODShape* shape = oi->shape;
         if (oi->forceDrawLOD >= 0)
@@ -607,23 +612,66 @@ int Scene::AdjustComplexity(SortObjectList& objs)
             oi->drawLOD = drawLevel;
         }
         // check number of faces in given level
-        if (oi->drawLOD != LOD_INVISIBLE)
-        {
-            oi->passNum = obj->PassNum(oi->drawLOD);
+        if (oi->drawLOD == LOD_INVISIBLE)
+            return 0;
+        oi->passNum = obj->PassNum(oi->drawLOD);
 #if _ENABLE_CHEATS
-            if (CHECK_DIAG(DETransparent))
+        if (CHECK_DIAG(DETransparent))
+        {
+            // all geometries are drawn transparent
+            if (oi->drawLOD == shape->FindGeometryLevel())
             {
-                // all geometries are drawn transparent
-                if (oi->drawLOD == shape->FindGeometryLevel())
-                {
-                    if (oi->passNum < 2)
-                        oi->passNum = 2;
-                }
+                if (oi->passNum < 2)
+                    oi->passNum = 2;
             }
-#endif
-            totalComplexity += obj->GetComplexity(oi->drawLOD, *obj);
         }
+#endif
+        return obj->GetComplexity(oi->drawLOD, *obj);
+    };
+
+    const int n = objs.Size();
+    Poseidon::TaskPool* pool = ENGINE_CONFIG.mtLod ? Poseidon::GetGlobalTaskPool() : nullptr;
+    if (pool && n > 1)
+    {
+        // Parallel: disjoint per-object writes + an order-independent (integer)
+        // atomic reduction, so the result is identical to serial IF the callees
+        // are thread-safe reads.  Verify that empirically below.
+        std::atomic<int> parTotal{0};
+        pool->ParallelFor(static_cast<uint32_t>(n),
+                          [&](uint32_t start, uint32_t end)
+                          {
+                              int local = 0;
+                              for (uint32_t i = start; i < end; i++)
+                                  local += computeObj(static_cast<int>(i));
+                              parTotal += local;
+                          });
+        // Correctness verify (--mt-verify): snapshot the parallel result, re-run
+        // serial, log any divergence.  Off for perf runs (it does 2x the work).
+        if (ENGINE_CONFIG.mtVerify)
+        {
+            std::vector<int> pDraw(n), pPass(n);
+            for (int i = 0; i < n; i++)
+            {
+                pDraw[i] = objs[i]->drawLOD;
+                pPass[i] = objs[i]->passNum;
+            }
+            int serTotal = 0;
+            for (int i = 0; i < n; i++)
+                serTotal += computeObj(i);
+            int mism = 0;
+            for (int i = 0; i < n; i++)
+                if (objs[i]->drawLOD != pDraw[i] || objs[i]->passNum != pPass[i])
+                    mism++;
+            if (mism != 0 || serTotal != parTotal.load())
+                RptF("MT-LOD verify FAILED: %d/%d obj mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
+                     serTotal);
+        }
+        return parTotal.load();
     }
+
+    int totalComplexity = 0;
+    for (int i = 0; i < n; i++)
+        totalComplexity += computeObj(i);
     return totalComplexity;
 }
 
@@ -638,19 +686,19 @@ static int ShadowFactor(Scene* scene)
 int Scene::AdjustShadowComplexity(SortObjectList& objs)
 {
 #if 1
-    int totalComplexity = 0;
+    const int shadowFactorI = ShadowFactor(this);
 
-    int shadowFactorI = ShadowFactor(this);
-
-    for (int i = 0; i < objs.Size(); i++)
+    // Per-object shadow-LOD selection — sibling of AdjustComplexity: independent
+    // per object (writes only oi->shadowLOD) + an integer NFaces() reduction, so
+    // it takes the same parallel-for pattern (--mt-lod).  Returns this object's
+    // shadow face-count contribution.
+    auto computeShadowObj = [&](int i) -> int
     {
         SortObject* oi = objs[i];
         Object* obj = oi->object;
         LODShape* shape = oi->shape;
         if (!shape)
-        {
-            continue;
-        }
+            return 0;
         if (!(shape->Special() & NoShadow) && oi->distance2 < Square(_shadowFogMaxRange) && shadowFactorI >= 12 &&
             obj->CastShadow())
         {
@@ -660,9 +708,7 @@ int Scene::AdjustShadowComplexity(SortObjectList& objs)
             {
                 level = shape->FindNearestWithoutProperty(level, "lodnoshadow");
                 if (level < 0)
-                {
                     level = LOD_INVISIBLE;
-                }
             }
             oi->shadowLOD = level;
         }
@@ -670,13 +716,47 @@ int Scene::AdjustShadowComplexity(SortObjectList& objs)
         {
             oi->shadowLOD = LOD_INVISIBLE;
         }
-        if (oi->shadowLOD != LOD_INVISIBLE)
+        if (oi->shadowLOD == LOD_INVISIBLE)
+            return 0;
+        return shape->Level(oi->shadowLOD)->NFaces();
+    };
+
+    const int n = objs.Size();
+    Poseidon::TaskPool* pool = ENGINE_CONFIG.mtLod ? Poseidon::GetGlobalTaskPool() : nullptr;
+    if (pool && n > 1)
+    {
+        std::atomic<int> parTotal{0};
+        pool->ParallelFor(static_cast<uint32_t>(n),
+                          [&](uint32_t start, uint32_t end)
+                          {
+                              int local = 0;
+                              for (uint32_t i = start; i < end; i++)
+                                  local += computeShadowObj(static_cast<int>(i));
+                              parTotal += local;
+                          });
+        // Correctness verify (--mt-verify): re-run serial + compare.
+        if (ENGINE_CONFIG.mtVerify)
         {
-            // check number of faces in given level
-            Shape* level = shape->Level(oi->shadowLOD);
-            totalComplexity += level->NFaces();
+            std::vector<int> pShadow(n);
+            for (int i = 0; i < n; i++)
+                pShadow[i] = objs[i]->shadowLOD;
+            int serTotal = 0;
+            for (int i = 0; i < n; i++)
+                serTotal += computeShadowObj(i);
+            int mism = 0;
+            for (int i = 0; i < n; i++)
+                if (objs[i]->shadowLOD != pShadow[i])
+                    mism++;
+            if (mism != 0 || serTotal != parTotal.load())
+                RptF("MT-SHADOWLOD verify FAILED: %d/%d mismatches, total par=%d ser=%d", mism, n, parTotal.load(),
+                     serTotal);
         }
+        return parTotal.load();
     }
+
+    int totalComplexity = 0;
+    for (int i = 0; i < n; i++)
+        totalComplexity += computeShadowObj(i);
     return totalComplexity;
 #else
 

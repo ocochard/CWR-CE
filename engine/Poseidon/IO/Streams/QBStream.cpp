@@ -24,6 +24,7 @@
 #include <Poseidon/Foundation/platform.hpp>
 
 #include <Poseidon/Foundation/Common/Win.h>
+#include <Poseidon/Core/ModSystem.hpp>
 #include <Poseidon/IO/Filesystem/FileOps.hpp>
 #include <Poseidon/IO/Filesystem/DirScanner.hpp>
 #include <Poseidon/IO/Streams/FileAccessPolicy.hpp>
@@ -1497,6 +1498,108 @@ QFBank* QIFStreamB::AutoBank(const char* name)
 }
 
 QIFStreamB::QIFStreamB() : _bank(nullptr) {}
+
+} // namespace Poseidon
+
+// Forward declaration (defined in Core/GameState.cpp). The mod-path store is a
+// process-wide global; each callback receives one absolute mod directory string.
+extern bool EnumModDirectories(Poseidon::ModDirectoryCallback callback, void* context);
+
+namespace Poseidon
+{
+
+namespace
+{
+// Loose-file mod fallback: on Windows the launcher makes each mod a subdirectory
+// of the game data folder, so `open("finmod\Sounds\...")` finds the file via cwd.
+// On POSIX the mod lives elsewhere (XDG Workshop/Local mods dirs) while cwd stays
+// at the data root, so the naive cwd-relative open fails for loose (non-PBO) mod
+// assets. Splice: if `name`'s first component matches a mounted mod's leaf
+// directory name (case-insensitively), rewrite to `<mod-abs-path>/<rest>` and
+// return the resolved absolute path. Ignores the trailing base-directory entry
+// (empty dir) that EnumModDirectories yields last.
+struct ResolveLooseModContext
+{
+    const char* firstComp;
+    size_t firstCompLen;
+    const char* rest; // starts with a separator, or empty at end of name
+    char* out;
+    size_t outLen;
+    bool resolved;
+};
+
+bool ResolveLooseModCallback(RStringB dir, void* ctx)
+{
+    auto* c = static_cast<ResolveLooseModContext*>(ctx);
+    if (dir.GetLength() == 0)
+    {
+        return false;
+    }
+    const char* dirStr = (const char*)dir;
+    // Basename of the mod directory: everything after the last '/' or '\'.
+    const char* base = dirStr;
+    for (const char* p = dirStr; *p; ++p)
+    {
+        if (*p == '/' || *p == '\\')
+        {
+            base = p + 1;
+        }
+    }
+    if (strlen(base) != c->firstCompLen)
+    {
+        return false;
+    }
+    if (strnicmp(base, c->firstComp, (int)c->firstCompLen) != 0)
+    {
+        return false;
+    }
+    // Splice: <mod-abs-path>/<rest-after-first-component>. `rest` still carries
+    // its leading separator; the resolver in OpenFileForRead / FilePathExists
+    // normalizes '\\' to '/'.
+    snprintf(c->out, c->outLen, "%s%s", dirStr, c->rest);
+    c->resolved = true;
+    return true; // stop enumeration
+}
+
+// Try to rewrite `name` into an absolute path under one of the mounted mod
+// directories. Returns true and fills `out` on hit; returns false otherwise
+// (out is left untouched).
+bool ResolveLooseModPath(const char* name, char* out, size_t outLen)
+{
+    if (!name || !*name)
+    {
+        return false;
+    }
+    // Skip any leading separators — configs sometimes carry a leading '\\'.
+    const char* p = name;
+    while (*p == '/' || *p == '\\')
+    {
+        ++p;
+    }
+    if (!*p)
+    {
+        return false;
+    }
+    const char* sep = p;
+    while (*sep && *sep != '/' && *sep != '\\')
+    {
+        ++sep;
+    }
+    if (!*sep)
+    {
+        return false; // no separator — not a mod-qualified path
+    }
+    ResolveLooseModContext ctx;
+    ctx.firstComp = p;
+    ctx.firstCompLen = (size_t)(sep - p);
+    ctx.rest = sep; // includes the separator
+    ctx.out = out;
+    ctx.outLen = outLen;
+    ctx.resolved = false;
+    ::EnumModDirectories(ResolveLooseModCallback, &ctx);
+    return ctx.resolved;
+}
+} // namespace
 
 void QIFStreamB::AutoOpen(const char* name, IQFBankContext* context)
 {

@@ -108,6 +108,27 @@ public:
 	bool enableHWTL = true;
 	bool enablePIII = false;
 	int d3dAdapter = -1;
+	// GPU skinning master switch (default OFF).  Read by both World (Man::Animate,
+	// to retain the per-object bone palette) and the GL33 backend (to build
+	// SSkinnedVertex buffers + upload the BonePalette UBO).  Single source of
+	// truth so the two layers never disagree.  See PERF-gpu-skinning-scope.md.
+	bool enableGpuSkinning = false;
+	// GPU frame-time breakdown (--gpu-timing): per-pass GL timestamp queries +
+	// present wall-time, logged once per frame.  See PERF-gpu-frametime-scope.md.
+	bool gpuTiming = false;
+	// Determinism gate (--determinism-log): per-tick checksum of dynamic-entity
+	// transforms, logged so two runs (or 1- vs N-thread) can be diffed.  The
+	// prerequisite for parallelizing sim-side work.  See PERF-multithread-scope.md.
+	bool determinismLog = false;
+	// Multithread the per-object draw-LOD selection (--mt-lod) across the task
+	// pool.  Also runs a serial reference and logs any mismatch (correctness
+	// verify), since ser6 can't show the FPS win and the determinism gate doesn't
+	// cover render-side LOD.  See PERF-multithread-scope.md.
+	bool mtLod = false;
+	// --mt-verify: also run the serial reference and log mismatches (correctness).
+	// Separate from --mt-lod so a plain --mt-lod run measures true parallel load
+	// (verify does 2x the work by design).
+	bool mtVerify = false;
 };
 
 // Convenience macro for accessing engine config

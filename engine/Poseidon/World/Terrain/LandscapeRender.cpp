@@ -1534,10 +1534,14 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
 #endif
 
     GEngine->FlushQueues();
+    GEngine->MarkGpuStage("terrain"); // GPU: opaque terrain + water + horizon (submitted)
     Dev::GFrameProfiler().Mark(Dev::FrameProfiler::PhaseDrawLandGround);
     GEngine->EnableReorderQueues(true);
     // draw non-alpha objects
     scene.DrawObjectsAndShadowsPass1();
+    if (ENGINE_CONFIG.gpuTiming)
+        GEngine->FlushQueues(); // isolate the opaque-object GPU time (diagnostic only)
+    GEngine->MarkGpuStage("objects"); // GPU: opaque object draws (Pass1, view LODs)
     Dev::GFrameProfiler().Mark(Dev::FrameProfiler::PhaseDrawLandObjects);
 
 #if LANDDRAW
@@ -1581,9 +1585,12 @@ void Landscape::DrawRect(Scene& scene, const LandBegEnd& bigRect)
 #endif
 #endif
     GEngine->FlushQueues();
+    GEngine->MarkGpuStage("grass"); // GPU: grass/alpha ground layers (Pass1 objects already marked)
 
     // draw alpha objects and shadows
     scene.DrawObjectsAndShadowsPass2();
+    GEngine->FlushQueues();
+    GEngine->MarkGpuStage("pass2"); // GPU: alpha objects + shadow-map pass
 
     GEngine->EnableReorderQueues(false);
     // clear any outstanding arrows (Buldozer ONLY)

@@ -17,6 +17,11 @@
 #include <CLI/Error.hpp>
 #include <CLI/Option.hpp>
 #include <CLI/Validators.hpp>
+// CLI11 2.6 split IsMember/IsNegation off into a separate header; older
+// releases (e.g. vcpkg-bundled) still expose them via <CLI/Validators.hpp>.
+#if __has_include(<CLI/ExtraValidators.hpp>)
+#include <CLI/ExtraValidators.hpp>
+#endif
 #include <algorithm>
 #include <exception>
 #include <system_error>
@@ -358,10 +363,10 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         bool showMenuScene = true;
         displayGroup->add_flag("--menu-scene,!--no-menu-scene", showMenuScene, "Show 3D background scene in menu");
 
-        showOption(
+        auto* renderOpt =
             displayGroup->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, auto (default: gl33)")
-                ->check(CLI::IsMember({"dummy", "gl33", "auto"})),
-            CliHelpVisibility::Full);
+                ->check(CLI::IsMember({"dummy", "gl33", "auto"}));
+        showOption(renderOpt, CliHelpVisibility::Full);
 
         showOption(displayGroup->add_flag("--tl,--hw-tl", _enableHWTL,
                                           "Enable hardware transform & lighting (T&L, default on)"),
@@ -602,6 +607,21 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         auto* debugGroup = app.add_option_group("Debug & Testing", "Development and testing options");
 
         showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode"), CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--gpu-skinning", _gpuSkinning,
+                                        "Experimental: GPU-skin infantry view LODs (bind-pose static VBO + bone UBO)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--gpu-timing", _gpuTiming,
+                                        "Per-pass GPU timestamp breakdown + present wait (real gameplay, not --benchmark)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--determinism-log", _determinismLog,
+                                        "Log a per-tick dynamic-entity transform checksum (determinism gate)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--mt-lod", _mtLod,
+                                        "Parallelize per-object draw-LOD selection across the task pool"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--mt-verify", _mtVerify,
+                                        "With --mt-lod: also run serial reference + log mismatches (correctness)"),
+                   CliHelpVisibility::Dev);
 
         if (!BuildInfo::ReleaseBuild)
         {
@@ -799,6 +819,13 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
             if (!_simulateMissionPath.empty())
             {
                 _simulateMode = true;
+                // Headless mission execution: default to the no-GL dummy backend
+                // so --simulate runs without a display or GL context. Otherwise
+                // the default gl33 backend fails to init headless, GEngine stays
+                // null, and Scene::Init null-derefs it (GEngine->TextBank()). An
+                // explicit --render (gl33/auto) still wins for watching a sim.
+                if (renderOpt->count() == 0)
+                    _renderBackend = "dummy";
                 // Make path absolute before any chdir (-C) changes the CWD
                 _testMissionPath = std::filesystem::absolute(_simulateMissionPath).string();
             }
@@ -1121,6 +1148,11 @@ void AppConfig::ApplyToLegacyGlobals()
     ENGINE_CONFIG.noTerrainCache = _noTerrainCache;
 
     // Debug & Testing
+    ENGINE_CONFIG.enableGpuSkinning = _gpuSkinning;
+    ENGINE_CONFIG.gpuTiming = _gpuTiming;
+    ENGINE_CONFIG.determinismLog = _determinismLog;
+    ENGINE_CONFIG.mtLod = _mtLod;
+    ENGINE_CONFIG.mtVerify = _mtVerify;
     ::Benchmark = _benchmark;
     ::GLogFileOps = _logFileOps;
 #ifdef NET_LOG_COMMAND_LINE

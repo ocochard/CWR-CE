@@ -213,7 +213,17 @@ add_subdirectory(apps/tools/Tools)
 add_subdirectory(apps/tools/TcPbo)
 add_subdirectory(apps/tools/TcLister)
 add_subdirectory(apps/tools/Studio)
-add_subdirectory(tests/unit/apps/Studio)
+# The Studio UI test suite is driven by the Dear ImGui Test Engine (the imgui
+# [test-engine] vcpkg feature). System-library builds that bypass vcpkg
+# (e.g. the FreeBSD port, -DVCPKG_MANIFEST_MODE=OFF) don't ship that header, so
+# skip the suite when it isn't found instead of failing the build. Tests are not
+# part of the shipped package.
+find_path(IMGUI_TE_ENGINE_INCLUDE_DIR imgui_te_engine.h)
+if(IMGUI_TE_ENGINE_INCLUDE_DIR)
+    add_subdirectory(tests/unit/apps/Studio)
+else()
+    message(STATUS "Dear ImGui Test Engine not found - skipping PoseidonStudioTests")
+endif()
 add_subdirectory(apps/tetris/Tetris)
 add_subdirectory(tests/unit/apps/Tetris)
 
@@ -332,35 +342,37 @@ foreach(source ${ALL_CPP_SOURCES})
     file(APPEND ${CMAKE_BINARY_DIR}/tidy_sources.txt "${source}\n")
 endforeach()
 
-# clang-format targets
-find_program(CLANG_FORMAT_EXE NAMES clang-format REQUIRED)
+# clang-format targets (optional — only registered if clang-format is on PATH)
+find_program(CLANG_FORMAT_EXE NAMES clang-format)
 
-if(WIN32)
-    add_custom_target(Format
-        COMMAND powershell -NoProfile -Command "Get-Content ${CMAKE_BINARY_DIR}/format_sources.txt | ForEach-Object { & '${CLANG_FORMAT_EXE}' --dry-run --Werror $_ }"
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Checking C++ formatting (fails if changes needed)"
-        VERBATIM
-    )
-    add_custom_target(FormatFix
-        COMMAND powershell -NoProfile -Command "Get-Content ${CMAKE_BINARY_DIR}/format_sources.txt | ForEach-Object { & '${CLANG_FORMAT_EXE}' -i $_ }"
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Formatting C++ sources with clang-format"
-        VERBATIM
-    )
-else()
-    add_custom_target(Format
-        COMMAND xargs -a ${CMAKE_BINARY_DIR}/format_sources.txt ${CLANG_FORMAT_EXE} --dry-run --Werror
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Checking C++ formatting (fails if changes needed)"
-        VERBATIM
-    )
-    add_custom_target(FormatFix
-        COMMAND xargs -a ${CMAKE_BINARY_DIR}/format_sources.txt ${CLANG_FORMAT_EXE} -i
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Formatting C++ sources with clang-format"
-        VERBATIM
-    )
+if(CLANG_FORMAT_EXE)
+    if(WIN32)
+        add_custom_target(Format
+            COMMAND powershell -NoProfile -Command "Get-Content ${CMAKE_BINARY_DIR}/format_sources.txt | ForEach-Object { & '${CLANG_FORMAT_EXE}' --dry-run --Werror $_ }"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Checking C++ formatting (fails if changes needed)"
+            VERBATIM
+        )
+        add_custom_target(FormatFix
+            COMMAND powershell -NoProfile -Command "Get-Content ${CMAKE_BINARY_DIR}/format_sources.txt | ForEach-Object { & '${CLANG_FORMAT_EXE}' -i $_ }"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Formatting C++ sources with clang-format"
+            VERBATIM
+        )
+    else()
+        add_custom_target(Format
+            COMMAND xargs -a ${CMAKE_BINARY_DIR}/format_sources.txt ${CLANG_FORMAT_EXE} --dry-run --Werror
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Checking C++ formatting (fails if changes needed)"
+            VERBATIM
+        )
+        add_custom_target(FormatFix
+            COMMAND xargs -a ${CMAKE_BINARY_DIR}/format_sources.txt ${CLANG_FORMAT_EXE} -i
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Formatting C++ sources with clang-format"
+            VERBATIM
+        )
+    endif()
 endif()
 
 # Python lint targets (ruff via uv, optional)
@@ -386,14 +398,18 @@ if(UV_EXE AND EXISTS ${BLENDER_ADDON_DIR}/pyproject.toml)
         COMMENT "Formatting Python sources with ruff"
         VERBATIM
     )
+endif()
 
-    # Combined targets: C++ + Python
+# Aggregate Lint targets — only register pieces that actually exist
+if(CLANG_FORMAT_EXE AND UV_EXE AND EXISTS ${BLENDER_ADDON_DIR}/pyproject.toml)
     add_custom_target(Lint DEPENDS Format PythonLint)
     add_custom_target(LintFix DEPENDS FormatFix PythonLintFix)
-else()
-    # No Python tooling — Lint just runs C++ format
+elseif(CLANG_FORMAT_EXE)
     add_custom_target(Lint DEPENDS Format)
     add_custom_target(LintFix DEPENDS FormatFix)
+elseif(UV_EXE AND EXISTS ${BLENDER_ADDON_DIR}/pyproject.toml)
+    add_custom_target(Lint DEPENDS PythonLint)
+    add_custom_target(LintFix DEPENDS PythonLintFix)
 endif()
 
 # clang-tidy targets
